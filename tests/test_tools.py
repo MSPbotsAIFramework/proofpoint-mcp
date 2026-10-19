@@ -156,3 +156,9 @@ def test_tool_without_credentials_returns_not_configured():
 def test_navigate_needs_no_credentials():
     content, _ = asyncio.run(create_mcp_server().call_tool("proofpoint_navigate", {"domain": "url_defense"}))
     assert json.loads(content[0].text)["tools"] == ["proofpoint_url_decode", "proofpoint_url_analyze"]
+
+
+@pytest.mark.parametrize("name", ["proofpoint_people_get_vap", "proofpoint_people_get_top_clickers"])
+def test_people_page_size_capped_at_200_default_50(tools, name):
+    schema = tools[name].inputSchema["properties"]["size"]
+    assert schema["maximum"] == 200 and schema["default"] == 50

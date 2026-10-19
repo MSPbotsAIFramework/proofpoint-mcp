@@ -44,7 +44,7 @@ def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
     async def proofpoint_people_get_vap(
         window: Window = 30,
         page: Page = 1,
-        size: Annotated[int, Field(description="Users per page (1-1000), highest attack index first.", ge=1, le=1000)] = 100,
+        size: Annotated[int, Field(description="Users per page (1-200, default 50), highest attack index first.", ge=1, le=200)] = 50,
     ) -> str:
         """Very Attacked People: users ranked by attack index, with the threat families aimed at them.
 
@@ -60,7 +60,7 @@ def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
     async def proofpoint_people_get_top_clickers(
         window: Window = 30,
         page: Page = 1,
-        size: Annotated[int, Field(description="Users per page (1-200).", ge=1, le=200)] = 100,
+        size: Annotated[int, Field(description="Users per page (1-200, default 50).", ge=1, le=200)] = 50,
     ) -> str:
         """Users who clicked the most malicious URLs, with click counts per threat family.
 

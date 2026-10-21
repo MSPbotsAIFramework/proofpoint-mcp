@@ -38,7 +38,9 @@ How credentials are sent to Proofpoint: TAP calls go to the cluster URL
 `POST https://auth.proofpoint.com/v1/token` (client credentials grant with the reports key and
 secret), then call `https://threatprotection-api.proofpoint.com/api/v1/dash/reports/...`; the
 token is used only within the one request. A cluster URL that is not https on a
-`proofpoint.com` host is refused with HTTP 400, so credentials can never be sent elsewhere.
+`proofpoint.com` host does not block the request (tools/list still works), but every tool call
+then returns an `invalid_argument` error before any outbound request, so credentials can never be
+sent elsewhere.
 Values that look like unresolved templates (`${...}`) are treated as missing.
 
 A request to `/mcp` without the principal and secret gets HTTP 401 naming the missing ones.

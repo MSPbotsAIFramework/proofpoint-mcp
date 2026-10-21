@@ -105,7 +105,11 @@ def normalize_base_url(value: str | None) -> str:
 
 
 class GatewayCredentialsMiddleware:
-    """Reads the Proofpoint headers on /mcp requests; 401 when a required one is missing."""
+    """Reads the Proofpoint headers on /mcp requests; 401 when a required one is missing.
+
+    A malformed cluster URL does not block the request (tools/list must work with any
+    values); tools report it instead and never send credentials to any host.
+    """
 
     def __init__(self, app: ASGIApp):
         self.app = app
@@ -129,11 +133,14 @@ class GatewayCredentialsMiddleware:
                 status_code=401,
             )(scope, receive, send)
             return
+        header_error = None
         try:
             base_url = normalize_base_url(values[HEADER_CLUSTER_URL])
         except ValueError as e:
-            await JSONResponse({"error": "Invalid header", "message": str(e)}, status_code=400)(scope, receive, send)
-            return
+            header_error = str(e)
+            # Never the caller's value: the client is built on the default TAP
+            # host, and tools return header_error before any request.
+            base_url = DEFAULT_TAP_URL
 
         credentials = ProofpointCredentials(
             principal=values[HEADER_PRINCIPAL] or "",
@@ -141,6 +148,7 @@ class GatewayCredentialsMiddleware:
             base_url=base_url,
             reports_key=values[HEADER_REPORTS_KEY],
             reports_secret=values[HEADER_REPORTS_SECRET],
+            header_error=header_error,
         )
         request_id = (request.headers.get("x-request-id") or "").strip()[:64] or uuid.uuid4().hex[:12]
         creds_token = _credentials_var.set(credentials)

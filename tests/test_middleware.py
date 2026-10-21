@@ -65,13 +65,26 @@ def test_placeholder_counts_as_missing():
     assert resp.status_code == 401
 
 
-def test_foreign_cluster_url_is_rejected():
+def test_placeholder_values_still_list_tools():
+    # The admin console refreshes the tool catalog with placeholder header values.
+    names = list(CREDS) + ["X-Proofpoint-Cluster-Url", "X-Proofpoint-Reports-Key", "X-Proofpoint-Reports-Secret"]
+    with _client() as client:
+        resp = client.post("/mcp", json=LIST_TOOLS, headers=MCP_HEADERS | {name: "placeholder" for name in names})
+    assert resp.status_code == 200
+    assert "proofpoint_tap_get_all_threats" in resp.text
+
+
+def test_foreign_cluster_url_is_reported_by_tools():
+    seen = _run_middleware(_raw({"X-Proofpoint-Cluster-Url": "https://evil.example"}))
+    assert "proofpoint.com" in seen["client"].header_error
+    assert seen["credentials"].base_url == "https://tap-api-v2.proofpoint.com"
+    call = {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "proofpoint_status", "arguments": {}}}
     with _client() as client:
         resp = client.post(
-            "/mcp", json=LIST_TOOLS, headers=MCP_HEADERS | CREDS | {"X-Proofpoint-Cluster-Url": "https://evil.example"}
+            "/mcp", json=call, headers=MCP_HEADERS | CREDS | {"X-Proofpoint-Cluster-Url": "https://evil.example"}
         )
-    assert resp.status_code == 400
-    assert "proofpoint.com" in resp.json()["message"]
+    assert resp.status_code == 200
+    assert '\\"invalid_argument\\"' in resp.text and "on a proofpoint.com host" in resp.text
 
 
 def test_tools_list_over_http():

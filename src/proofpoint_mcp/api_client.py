@@ -89,6 +89,9 @@ class ProofpointCredentials:
     base_url: str
     reports_key: str | None = None
     reports_secret: str | None = None
+    # Set when a header value is malformed: tools then return invalid_argument
+    # instead of calling Proofpoint, while tools/list still works.
+    header_error: str | None = None
 
     def __repr__(self) -> str:  # never leak secrets into logs or tracebacks
         return f"ProofpointCredentials(principal=<redacted>, secret=<redacted>, base_url={self.base_url!r})"
@@ -104,6 +107,7 @@ class ProofpointClient:
     def __init__(self, credentials: ProofpointCredentials, http_client: httpx.AsyncClient | None = None):
         self._credentials = credentials
         self._http = http_client
+        self.header_error = credentials.header_error
         self._reports_token: str | None = None
         self._token_lock = asyncio.Lock()
 

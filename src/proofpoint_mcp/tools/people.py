@@ -20,11 +20,38 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
 from ..api_client import ProofpointClient
-from ._common import READ_ONLY, ClientFactory, Window, run_tool
+from ._common import (
+    READ_ONLY,
+    ClientFactory,
+    Offset,
+    Window,
+    locate,
+    resume_fields,
+    run_tool,
+)
 
 VAP_MAX_SIZE = 1000
 CLICKERS_MAX_SIZE = 200
 Page = Annotated[int, Field(description="Page number, from 1.", ge=1)]
+
+
+async def people_page(
+    client: ProofpointClient, path: str, total_key: str, window: int, page: int, size: int, offset: int | None
+) -> Any:
+    """One People list read from record ``offset`` (or from ``page``), with offset / next_offset.
+
+    The API pages by page number and size; the page that holds the offset is read and the
+    users before it are skipped. All fields of the API response are kept.
+    """
+    number, size, start = locate(offset, page, size)
+    payload = await client.tap("GET", path, {"window": window, "page": number, "size": size})
+    if not isinstance(payload, dict):
+        return payload
+    users = payload.get("users") if isinstance(payload.get("users"), list) else []
+    total = payload.get(total_key)
+    more = number * size < total if isinstance(total, int) else len(users) >= size
+    kept = users[start - (number - 1) * size :]
+    return payload | {"users": kept, "page": number, "has_more": more} | resume_fields(start, len(kept), more)
 
 
 def find_user(payload: Any, email: str) -> tuple[int, dict] | None:
@@ -45,6 +72,7 @@ def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
         window: Window = 30,
         page: Page = 1,
         size: Annotated[int, Field(description="Users per page (1-200, default 50), highest attack index first.", ge=1, le=200)] = 50,
+        offset: Offset = None,
     ) -> str:
         """Very Attacked People: users ranked by attack index, with the threat families aimed at them.
 
@@ -52,7 +80,7 @@ def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
         """
 
         async def action(client: ProofpointClient) -> Any:
-            return await client.tap("GET", "/v2/people/vap", {"window": window, "page": page, "size": size})
+            return await people_page(client, "/v2/people/vap", "totalVapUsers", window, page, size, offset)
 
         return await run_tool("proofpoint_people_get_vap", client_factory, action)
 
@@ -61,6 +89,7 @@ def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
         window: Window = 30,
         page: Page = 1,
         size: Annotated[int, Field(description="Users per page (1-200, default 50).", ge=1, le=200)] = 50,
+        offset: Offset = None,
     ) -> str:
         """Users who clicked the most malicious URLs, with click counts per threat family.
 
@@ -68,7 +97,7 @@ def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
         """
 
         async def action(client: ProofpointClient) -> Any:
-            return await client.tap("GET", "/v2/people/top-clickers", {"window": window, "page": page, "size": size})
+            return await people_page(client, "/v2/people/top-clickers", "totalTopClickers", window, page, size, offset)
 
         return await run_tool("proofpoint_people_get_top_clickers", client_factory, action)
 

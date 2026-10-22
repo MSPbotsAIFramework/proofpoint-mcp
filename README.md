@@ -67,7 +67,7 @@ hour) or `interval` (ISO8601, 30 seconds to 1 hour, e.g.
 | `proofpoint_events_list` | All events as one list, filtered by classification or outcome | sinceSeconds, sinceTime, interval, threatType (`spam`, `phish`, `malware`, `impostor`), disposition, max_events |
 | `proofpoint_events_get_details` | One event by GUID, id, QID or Message-ID | **event_id**, sinceSeconds, sinceTime, interval |
 | `proofpoint_events_get_stats` | Counts by event type, classification, status; top recipients and senders | sinceSeconds, sinceTime, interval |
-| `proofpoint_smart_search_trace` | Find threat messages by sender, recipient, subject, Message-ID | sender, recipient, subject, message_id, startDate, endDate, status, page, per_page |
+| `proofpoint_smart_search_trace` | Find threat messages by sender, recipient, subject, Message-ID | sender, recipient, subject, message_id, startDate, endDate, status, page, per_page, offset |
 | `proofpoint_smart_search_get_message` | Full TAP record of one threat message | **message_id**, sinceSeconds, sinceTime, interval |
 | `proofpoint_smart_search_get_headers` | Envelope and header fields of one threat message | **message_id**, sinceSeconds, sinceTime, interval |
 | `proofpoint_forensics_search_messages` | Find threat messages by sender, subject, Message-ID or threat id | sender, subject, message_id, threat_id, startDate, endDate, limit |
@@ -77,8 +77,8 @@ hour) or `interval` (ISO8601, 30 seconds to 1 hour, e.g.
 | `proofpoint_threat_get_campaign` | Campaign details, actors, malware, techniques | **campaign_id** |
 | `proofpoint_threat_list_families` | Malware families, actors and techniques of recent campaigns | sinceTime, interval (up to 1 day), max_campaigns |
 | `proofpoint_threat_get_iocs` | IOCs from a campaign's forensics, or threats in a SIEM window | campaign_id, sinceTime, interval, threat_type |
-| `proofpoint_people_get_vap` | Very Attacked People | window (14, 30, 90), page, size |
-| `proofpoint_people_get_top_clickers` | Users who clicked the most malicious URLs | window, page, size |
+| `proofpoint_people_get_vap` | Very Attacked People | window (14, 30, 90), page, size, offset |
+| `proofpoint_people_get_top_clickers` | Users who clicked the most malicious URLs | window, page, size, offset |
 | `proofpoint_people_get_user_risk` | One user's VAP and top-clicker standing | **email**, window |
 | `proofpoint_url_decode` | Decode URL Defense rewritten links | **urls** |
 | `proofpoint_url_analyze` | Decode and break down one link | **url** |
@@ -174,6 +174,10 @@ uv run pytest
   `proofpoint.com` host, so a caller cannot redirect the Basic credentials to another server.
 - **Bounded output.** SIEM lists are capped per list (`max_events`, default 100) with the full
   counts reported; every result is capped at 20,000 characters.
+- **Paging by offset.** `smart_search_trace`, `people_get_vap` and `people_get_top_clickers` page
+  by page number, and a page cut to fit the size limit has its rest on no other page. They also
+  take `offset` (record position, overriding `page`) and return `next_offset`, which continues
+  right after the last record returned; pass it back to read every record exactly once.
 - **No interactive prompts or UI cards.** The stateless gateway cannot relay them; missing
   information is a required parameter or an error instead.
 

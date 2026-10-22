@@ -448,3 +448,137 @@ async def test_status_probe(monkeypatch):
 
 def test_common_has_no_module_level_credentials():
     assert not [name for name in vars(_common) if "secret" in name.lower() or "principal" in name.lower()]
+
+
+# ---- Page-number paging that survives truncation (offset / next_offset) -----------------------------
+# Self-test checklist: a cut page continues right after the last record returned (from page 1 and
+# from a later page); offset aligned / not aligned to a page; offset past the end; offset wins over
+# page; page-only calls send the same request as before; no retry hint for a page size.
+
+TOTAL = 137
+BIG = {f"f{k}": f"value {k}" for k in range(40)}
+PEOPLE_ROWS = [{"id": f"r{i:03d}", "identity": {"emails": [f"u{i}@corp.example"]}, **BIG} for i in range(TOTAL)]
+TRACE_ROWS = [{"GUID": f"r{i:03d}", "subject": f"Message {i}", "threatsInfoMap": [BIG, BIG]} for i in range(TOTAL)]
+
+# tool, route, items field, id field, page-size parameter
+PAGED_TOOLS = [
+    ("proofpoint_people_get_vap", "/v2/people/vap", "users", "id", "size"),
+    ("proofpoint_people_get_top_clickers", "/v2/people/top-clickers", "users", "id", "size"),
+    ("proofpoint_smart_search_trace", "/v2/siem/all", "messages", "GUID", "per_page"),
+]
+PEOPLE_TOTAL = {"/v2/people/vap": "totalVapUsers", "/v2/people/top-clickers": "totalTopClickers"}
+
+
+def _paged_api(path, rows):
+    """People pages by page / size like Proofpoint; the SIEM search returns every event at once."""
+
+    def reply(request):
+        if path == "/v2/siem/all":
+            return httpx.Response(200, json={"messagesDelivered": rows})
+        params = dict(request.url.params)
+        number, size = int(params.get("page", 1)), int(params["size"])
+        return httpx.Response(200, json={"users": rows[(number - 1) * size : number * size], PEOPLE_TOTAL[path]: len(rows)})
+
+    return reply
+
+
+def _api(path, small=False):
+    if path == "/v2/siem/all":
+        rows = [{"GUID": r["GUID"]} for r in TRACE_ROWS] if small else TRACE_ROWS
+    else:
+        rows = [{"id": r["id"]} for r in PEOPLE_ROWS] if small else PEOPLE_ROWS
+    return Recorder({f"GET tap-api-v2.proofpoint.com{path}": _paged_api(path, rows)})
+
+
+def _ids(result, key, id_field):
+    return [r[id_field] for r in result[key]]
+
+
+async def _walk(monkeypatch, rec, tool, key, id_field, args):
+    ids, calls, cut = [], 0, 0
+    while True:
+        result = await _call(monkeypatch, rec, tool, args)
+        calls += 1
+        assert "retry_page_size" not in result, result.get("note")
+        cut += bool(result.get("truncated"))
+        ids += _ids(result, key, id_field)
+        if result.get("next_offset") is None:
+            return ids, cut
+        args = {k: v for k, v in args.items() if k != "page"} | {"offset": result["next_offset"]}
+        assert calls < 200
+
+
+@pytest.mark.parametrize("tool,path,key,id_field,size_param", PAGED_TOOLS)
+async def test_cut_pages_continue_without_gaps_from_page_1(monkeypatch, tool, path, key, id_field, size_param):
+    ids, cut = await _walk(monkeypatch, _api(path), tool, key, id_field, {size_param: 50})
+    assert cut > 0  # pages really were cut
+    assert ids == [f"r{i:03d}" for i in range(TOTAL)]  # no gaps, no duplicates
+
+
+@pytest.mark.parametrize("tool,path,key,id_field,size_param", PAGED_TOOLS)
+async def test_cut_pages_continue_without_gaps_from_a_later_page(monkeypatch, tool, path, key, id_field, size_param):
+    ids, cut = await _walk(monkeypatch, _api(path), tool, key, id_field, {"page": 3, size_param: 40})
+    assert cut > 0
+    assert ids == [f"r{i:03d}" for i in range(80, TOTAL)]
+
+
+@pytest.mark.parametrize("tool,path,key,id_field,size_param", PAGED_TOOLS)
+@pytest.mark.parametrize("offset,size,page,first", [(30, 25, 2, "r030"), (50, 25, 3, "r050"), (0, 25, 1, "r000")])
+async def test_offset_reads_the_page_that_holds_it(
+    monkeypatch, tool, path, key, id_field, size_param, offset, size, page, first
+):
+    rec = _api(path, small=True)
+    result = await _call(monkeypatch, rec, tool, {"offset": offset, size_param: size})
+    if path != "/v2/siem/all":
+        assert rec.query()["page"] == [str(page)] and rec.query()["size"] == [str(size)]
+    assert _ids(result, key, id_field) == [f"r{i:03d}" for i in range(offset, page * size)]
+    assert result[key][0][id_field] == first and result["offset"] == offset and result["page"] == page
+    assert result["next_offset"] == page * size  # rest of the page returned, next page starts after it
+
+
+@pytest.mark.parametrize("tool,path,key,id_field,size_param", PAGED_TOOLS)
+async def test_offset_past_the_end_is_empty(monkeypatch, tool, path, key, id_field, size_param):
+    result = await _call(monkeypatch, _api(path, small=True), tool, {"offset": 500, size_param: 25})
+    assert (result[key], result["has_more"], result.get("next_offset")) == ([], False, None)
+
+
+@pytest.mark.parametrize("tool,path,key,id_field,size_param", PAGED_TOOLS)
+async def test_offset_wins_over_page(monkeypatch, tool, path, key, id_field, size_param):
+    rec = _api(path, small=True)
+    result = await _call(monkeypatch, rec, tool, {"offset": 10, "page": 4, size_param: 10})
+    if path != "/v2/siem/all":
+        assert rec.query()["page"] == ["2"]
+    assert result[key][0][id_field] == "r010" and result["page"] == 2
+
+
+@pytest.mark.parametrize("tool,path,key,id_field,size_param", PAGED_TOOLS)
+async def test_page_only_sends_the_same_request_as_before(monkeypatch, tool, path, key, id_field, size_param):
+    rec = _api(path, small=True)
+    result = await _call(monkeypatch, rec, tool, {"page": 2, size_param: 25})
+    if path == "/v2/siem/all":
+        assert rec.query() == {"format": ["json"], "sinceSeconds": ["3600"]}
+    else:
+        assert rec.query() == {"window": ["30"], "page": ["2"], "size": ["25"]}
+    assert _ids(result, key, id_field) == [f"r{i:03d}" for i in range(25, 50)]
+    assert (result["page"], result["offset"], result["next_offset"], result["has_more"]) == (2, 25, 50, True)
+
+
+async def test_people_keeps_the_api_fields_and_the_last_page_has_no_next_offset(monkeypatch):
+    rec = _api("/v2/people/vap", small=True)
+    result = await _call(monkeypatch, rec, "proofpoint_people_get_vap", {"page": 6, "size": 25})
+    assert result["totalVapUsers"] == TOTAL and len(result["users"]) == 12
+    assert result["has_more"] is False and "next_offset" not in result
+
+
+async def test_people_without_a_total_pages_while_a_page_is_full(monkeypatch):
+    rows = [{"id": f"r{i:03d}"} for i in range(28)]
+
+    def reply(request):
+        number, size = int(request.url.params["page"]), int(request.url.params["size"])
+        return httpx.Response(200, json={"users": rows[(number - 1) * size : number * size]})
+
+    rec = Recorder({"GET tap-api-v2.proofpoint.com/v2/people/top-clickers": reply})
+    full = await _call(monkeypatch, rec, "proofpoint_people_get_top_clickers", {"offset": 5, "size": 10})
+    assert (full["has_more"], full["next_offset"]) == (True, 10)
+    last = await _call(monkeypatch, rec, "proofpoint_people_get_top_clickers", {"offset": 25, "size": 10})
+    assert (last["has_more"], len(last["users"]), last.get("next_offset")) == (False, 3, None)

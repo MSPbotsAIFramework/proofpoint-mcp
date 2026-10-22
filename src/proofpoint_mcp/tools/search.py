@@ -23,10 +23,13 @@ from ._common import (
     READ_ONLY,
     ClientFactory,
     Interval,
+    Offset,
     SinceSeconds,
     SinceTime,
     dates_window,
     fetch_siem,
+    locate,
+    resume_fields,
     run_tool,
     siem_window,
 )
@@ -151,6 +154,7 @@ def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
         ] = "all",
         page: Annotated[int, Field(description="Page number, from 1.", ge=1)] = 1,
         per_page: Annotated[int, Field(description="Results per page (1-200).", ge=1, le=200)] = 50,
+        offset: Offset = None,
     ) -> str:
         """Trace threat messages by sender, recipient, subject or Message-ID, with their delivery outcome.
 
@@ -165,16 +169,20 @@ def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
             elif status in ("quarantined", "rejected"):
                 events = [e for e in events if e["eventType"] == "messageBlocked"]
             found = search_events(events, sender=sender, recipient=recipient, subject=subject, message_id=message_id)
-            start = (page - 1) * per_page
+            number, size, start = locate(offset, page, per_page)
+            end = number * size  # the rest of the page that holds the offset
             rows = [
                 {
                     "outcome": "delivered" if e["eventType"] == "messageDelivered" else "blocked",
                     **{k: e.get(k) for k in ("messageTime", "sender", "recipient", "subject", "messageID", "GUID",
                                              "QID", "quarantineFolder", "quarantineRule", "threatsInfoMap")},
                 }
-                for e in found[start : start + per_page]
+                for e in found[start:end]
             ]
-            return {"total": len(found), "page": page, "messages": rows, "has_more": start + per_page < len(found)}
+            more = end < len(found)
+            return {"total": len(found), "page": number, "messages": rows, "has_more": more} | resume_fields(
+                start, len(rows), more
+            )
 
         return await run_tool("proofpoint_smart_search_trace", client_factory, action)
 

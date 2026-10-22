@@ -76,6 +76,33 @@ Window = Annotated[
     Literal[14, 30, 90],
     Field(description="Look-back window in days: 14, 30 or 90."),
 ]
+Offset = Annotated[
+    int | None,
+    Field(description="Record position to start from (0-based, overrides page); pass next_offset from the previous result.", ge=0),
+]
+
+
+def locate(offset: int | None, page: int | None, size: int) -> tuple[int, int, int]:
+    """(page number, page size, start) for a read from record ``start``.
+
+    Proofpoint pages by number only, so a position is reached by reading the page that holds
+    it (same page size) and skipping the records before it.
+    """
+    start = offset if offset is not None else ((page or 1) - 1) * size
+    return start // size + 1, size, start
+
+
+def resume_fields(start: int, returned: int, more: bool) -> dict[str, Any]:
+    """offset / next_offset of a read from record ``start``.
+
+    next_offset continues right after the last record returned, also when the result is cut
+    to fit the size limit (a page number cannot: the rest of a cut page is on no other page).
+    """
+    fields: dict[str, Any] = {"offset": start}
+    if more:
+        fields["next_offset"] = start + returned
+    fields["_resume"] = {"key": "next_offset", "start": start}
+    return fields
 
 
 def compact(values: dict[str, Any]) -> dict[str, Any]:

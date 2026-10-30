@@ -95,6 +95,9 @@ Links: [connect.mspbots.ai](https://connect.mspbots.ai) · [mspbots.ai](https://
 | `X-Proofpoint-Cluster-Url` | No | string | `https://tap-api-v2.proofpoint.com` | https URL on a `proofpoint.com` host | TAP API base URL | `https://tap-api-v2.proofpoint.com` |
 | `X-Proofpoint-Reports-Key` | No | string | none | - | Dashboard Reports API key (only for `reports_*` tools) | `your-reports-key` |
 | `X-Proofpoint-Reports-Secret` | No | string | none | - | Dashboard Reports API secret | `your-reports-secret` |
+| `X-Proofpoint-Pps-Base-Url` | No | string | none | https URL, bare host | Proofpoint Protection Server (PPS) REST API base URL; required to use the quarantine tools | `https://tenant.pphosted.com:10000` |
+| `X-Proofpoint-Pps-Username` | No | string | none | - | PPS API-role account username; required to use the quarantine tools | `your-pps-username` |
+| `X-Proofpoint-Pps-Password` | No | string | none | - | PPS API-role account password; required to use the quarantine tools | `your-pps-password` |
 
 Where to get them:
 
@@ -103,19 +106,29 @@ Where to get them:
 - **Reports API key (optional):** in the Admin Portal open **Settings -> API Key Management ->
   Threat Protection** and choose **Create New**. The TAP service principal is not accepted by
   the Reports API, so the four `reports_*` tools need this second pair.
+- **PPS credentials (optional, only for the quarantine tools):** an administrator with a role
+  that includes REST API access on your Proofpoint Protection Server. Cloud tenants: request
+  this through a Proofpoint support ticket. On-prem: enable the API GUI in `filter.cfg` and
+  create an API-type admin role in the PPS management interface.
 
 How credentials are sent to Proofpoint: TAP calls go to the cluster URL
 (`https://tap-api-v2.proofpoint.com/v2/...`) with HTTP Basic authentication
 (`principal:secret`). Reports calls first get a Bearer token from
 `POST https://auth.proofpoint.com/v1/token` (client credentials grant with the reports key and
 secret), then call `https://threatprotection-api.proofpoint.com/api/v1/dash/reports/...`; the
-token is used only within the one request. A cluster URL that is not https on a
-`proofpoint.com` host does not block the request (tools/list still works), but every tool call
-then returns an `invalid_argument` error before any outbound request, so credentials can never be
-sent elsewhere.
+token is used only within the one request. Quarantine calls go to the PPS base URL
+(`<pps-base-url>/rest/v1/quarantine`) with HTTP Basic authentication (`pps_username:pps_password`).
+A cluster/base URL that fails its structural check does not block the request (tools/list still
+works), but every TAP/Reports tool call then returns an `invalid_argument` error before any
+outbound request for a malformed TAP cluster URL, and the 4 quarantine tools do the same for a
+malformed PPS base URL -- without affecting any other tool -- so credentials can never be sent
+elsewhere. The PPS base URL has no domain-suffix allowlist (unlike the TAP cluster URL): PPS
+cloud tenants are on `*.pphosted.com` and on-prem tenants are on an arbitrary customer host.
 Values that look like unresolved templates (`${...}`) are treated as missing.
 
-A request to `/mcp` without the principal and secret gets HTTP 401 naming the missing ones.
+A request to `/mcp` without the principal and secret gets HTTP 401 naming the missing ones. The
+3 PPS headers are optional: without them, the 4 quarantine tools return `not_configured`
+naming the missing headers; every other tool is unaffected.
 
 ## Tools
 
@@ -158,7 +171,10 @@ hour) or `interval` (ISO8601, 30 seconds to 1 hour, e.g.
 | `proofpoint_reports_threat_summary` | Threat volume by category | window, threatType |
 | `proofpoint_reports_mail_flow` | Trend of protected messages | window, granularity |
 | `proofpoint_reports_executive_summary` | Threat categories, VAPs and top clickers | window (7, 14, 30, 90) |
-| `proofpoint_quarantine_list` / `_search` / `_release` / `_delete` | Unavailable (see below) | as before |
+| `proofpoint_quarantine_list` | Quarantined messages in Proofpoint Protection Server (PPS), optionally filtered | sender, recipient, subject, startDate, endDate, folder, page, per_page |
+| `proofpoint_quarantine_search` | Find a quarantined message by sender, recipient or subject (one query, matched as OR) | **query**, startDate, endDate, page, per_page |
+| `proofpoint_quarantine_release` | Release a quarantined message | **message_id** |
+| `proofpoint_quarantine_delete` | Permanently delete a quarantined message | **message_id** |
 | `proofpoint_policy_list` / `_get` / `_list_routes` | Unavailable (see below) | as before |
 | `proofpoint_dlp_list_incidents` / `_get_incident` / `_list_encrypted` | Unavailable (see below) | as before |
 | `proofpoint_forensics_pull_messages` | Unavailable (see below) | **message_ids**, reason |
@@ -238,12 +254,26 @@ uv run pytest
   - `people_get_user_risk` looks the user up in the VAP and top-clicker lists.
   - `url_analyze` decodes the link with `/v2/url/decode` and parses it; TAP has no URL scoring.
   - `reports_*` use the Dashboard Reports API, which needs its own key (optional headers).
-- **Unavailable tools.** Quarantine, policy, DLP / encryption and message pull belong to other
-  Proofpoint products (Protection Server, Essentials, Threat Response) and are not reachable
-  with TAP credentials. These 11 tools stay listed for compatibility, change nothing, and return
-  `invalid_argument` naming the TAP tool that covers the nearest need.
-- **Cluster URL check.** `X-Proofpoint-Cluster-Url` is accepted only as an https URL on a
-  `proofpoint.com` host, so a caller cannot redirect the Basic credentials to another server.
+- **Unavailable tools.** Policy, DLP / encryption and message pull belong to other Proofpoint
+  products (Protection Server, Essentials, Threat Response), or -- for policy -- are not exposed
+  by any Proofpoint API found during research (TAP, Essentials Interface/Threat APIs, PPS REST
+  API; confirmed 2026-10-30). These 7 tools stay listed for compatibility, change nothing, and
+  return `invalid_argument` naming the TAP tool that covers the nearest need.
+- **Quarantine, via Proofpoint Protection Server (PRD-21254).** The 4 `quarantine_*` tools keep
+  their names and parameters but now call the real PPS REST API (`<pps-base-url>/rest/v1/quarantine`,
+  documented via the Cortex XSOAR "Proofpoint Protection Server v2" integration -- Proofpoint has
+  no single official PPS REST reference) when PPS credentials are sent; otherwise they return
+  `not_configured`. `message_id` is an opaque `folder:localguid` pair minted by `_list`/`_search`
+  and consumed by `_release`/`_delete` -- callers must not construct one themselves.
+  `_search`'s single `query` parameter is matched as OR across sender/recipient/subject (three
+  PPS lookups, merged and de-duplicated) to keep the tool's existing single-field search promise.
+- **Cluster/base URL checks.** `X-Proofpoint-Cluster-Url` is accepted only as an https URL on a
+  `proofpoint.com` host, so a caller cannot redirect the TAP Basic credentials to another server.
+  `X-Proofpoint-Pps-Base-Url` has the same structural check (https, bare host) but no domain
+  allowlist, because PPS cloud tenants are on `*.pphosted.com` and on-prem tenants are on an
+  arbitrary customer host -- the PPS admin password is supplied by the same tenant that supplies
+  the base URL, so the trust boundary is unchanged, but this is a narrower check than the TAP one
+  and is called out here for that reason.
 - **Bounded output.** SIEM lists are capped per list (`max_events`, default 100) with the full
   counts reported; every result is capped at 20,000 characters.
 - **Paging by offset.** `smart_search_trace`, `people_get_vap` and `people_get_top_clickers` page

@@ -160,6 +160,37 @@ def test_optional_reports_headers():
     assert seen["client"].has_reports_credentials
 
 
+def test_pps_headers_absent_by_default():
+    seen = _run_middleware(_raw())
+    creds = seen["credentials"]
+    assert (creds.pps_base_url, creds.pps_username, creds.pps_password) == (None, None, None)
+    assert not seen["client"].has_pps_credentials
+    assert seen["client"].pps_header_error is None
+
+
+def test_optional_pps_headers():
+    seen = _run_middleware(_raw({
+        "X-Proofpoint-Pps-Base-Url": "https://tenant.pphosted.com:10000",
+        "X-Proofpoint-Pps-Username": "u",
+        "X-Proofpoint-Pps-Password": "p",
+    }))
+    creds = seen["credentials"]
+    assert creds.pps_base_url == "https://tenant.pphosted.com:10000"
+    assert (creds.pps_username, creds.pps_password) == ("u", "p")
+    assert seen["client"].has_pps_credentials
+
+
+def test_malformed_pps_base_url_is_kept_separate_from_header_error():
+    # A bad PPS URL must not flip header_error (that would block every other tool, the same
+    # way a bad TAP cluster URL already does -- see test_quarantine_tools.py for the proof that
+    # a non-quarantine tool keeps working while pps_header_error is set).
+    seen = _run_middleware(_raw({"X-Proofpoint-Pps-Base-Url": "http://tenant.pphosted.com"}))
+    assert seen["client"].pps_header_error is not None
+    assert "X-Proofpoint-Pps-Base-Url" in seen["client"].pps_header_error
+    assert seen["client"].header_error is None
+    assert not seen["client"].has_pps_credentials
+
+
 def test_concurrent_requests_do_not_share_credentials():
     observed: list[tuple[str, str]] = []
 

@@ -105,9 +105,18 @@ class ProofpointCredentials:
     base_url: str
     reports_key: str | None = None
     reports_secret: str | None = None
+    # Proofpoint Protection Server (PPS): a second, independent, optional credential set that
+    # only the quarantine tools use (PRD-21254). TAP-only tenants leave all three None.
+    pps_base_url: str | None = None
+    pps_username: str | None = None
+    pps_password: str | None = None
     # Set when a header value is malformed: tools then return invalid_argument
     # instead of calling Proofpoint, while tools/list still works.
     header_error: str | None = None
+    # Same idea as header_error, but scoped to the PPS base URL only: a malformed value must not
+    # block the TAP/Reports tools (PPS is optional), so it is kept separate and only the
+    # quarantine tools check it.
+    pps_header_error: str | None = None
 
     def __repr__(self) -> str:  # never leak secrets into logs or tracebacks
         return f"ProofpointCredentials(principal=<redacted>, secret=<redacted>, base_url={self.base_url!r})"
@@ -124,6 +133,7 @@ class ProofpointClient:
         self._credentials = credentials
         self._http = http_client
         self.header_error = credentials.header_error
+        self.pps_header_error = credentials.pps_header_error
         self._reports_token: str | None = None
         self._token_lock = asyncio.Lock()
 
@@ -131,11 +141,21 @@ class ProofpointClient:
     def has_reports_credentials(self) -> bool:
         return bool(self._credentials.reports_key and self._credentials.reports_secret)
 
+    @property
+    def has_pps_credentials(self) -> bool:
+        return bool(
+            self._credentials.pps_base_url and self._credentials.pps_username and self._credentials.pps_password
+        )
+
     def _client(self) -> httpx.AsyncClient:
         return self._http or _get_shared_http_client()
 
     def _basic(self) -> str:
         raw = f"{self._credentials.principal}:{self._credentials.secret}".encode()
+        return "Basic " + base64.b64encode(raw).decode()
+
+    def _pps_basic(self) -> str:
+        raw = f"{self._credentials.pps_username}:{self._credentials.pps_password}".encode()
         return "Basic " + base64.b64encode(raw).decode()
 
     async def tap(
@@ -150,6 +170,28 @@ class ProofpointClient:
         url = f"{self._credentials.base_url}/{path.lstrip('/')}"
         headers = {"Authorization": self._basic(), "Accept": "application/json"}
         return await self._send(method, url, path, params, body, headers, idempotent or method == "GET")
+
+    async def pps(
+        self,
+        method: str,
+        path: str,
+        params: list[tuple[str, Any]] | dict[str, Any] | None = None,
+        body: Any = None,
+        idempotent: bool = False,
+    ) -> Any:
+        """Call a Proofpoint Protection Server REST API (Basic auth) on the caller's PPS host.
+
+        Raises ValueError when PPS credentials were not sent; callers should check
+        ``has_pps_credentials`` first to return the tool-specific not_configured envelope instead.
+        """
+        if not self.has_pps_credentials:
+            raise ValueError(
+                "Quarantine needs Proofpoint Protection Server credentials: send "
+                "X-Proofpoint-Pps-Base-Url, X-Proofpoint-Pps-Username and X-Proofpoint-Pps-Password."
+            )
+        url = f"{self._credentials.pps_base_url}/rest/v1/{path.lstrip('/')}"
+        headers = {"Authorization": self._pps_basic(), "Accept": "application/json"}
+        return await self._send(method, url, f"pps/{path.lstrip('/')}", params, body, headers, idempotent or method == "GET")
 
     async def reports(self, path: str, params: list[tuple[str, Any]] | dict[str, Any] | None = None) -> Any:
         """Call a Dashboard Reports API (Bearer token from the reports API key)."""

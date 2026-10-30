@@ -34,8 +34,21 @@ HEADER_SECRET = "X-Proofpoint-Service-Secret"
 HEADER_CLUSTER_URL = "X-Proofpoint-Cluster-Url"
 HEADER_REPORTS_KEY = "X-Proofpoint-Reports-Key"
 HEADER_REPORTS_SECRET = "X-Proofpoint-Reports-Secret"
+# Proofpoint Protection Server (PPS): a second, optional credential set used only by the
+# quarantine tools (PRD-21254). Absent -> those tools return not_configured; every other tool
+# and tools/list itself are unaffected.
+HEADER_PPS_BASE_URL = "X-Proofpoint-Pps-Base-Url"
+HEADER_PPS_USERNAME = "X-Proofpoint-Pps-Username"
+HEADER_PPS_PASSWORD = "X-Proofpoint-Pps-Password"
 REQUIRED_HEADERS = [HEADER_PRINCIPAL, HEADER_SECRET]
-OPTIONAL_HEADERS = [HEADER_CLUSTER_URL, HEADER_REPORTS_KEY, HEADER_REPORTS_SECRET]
+OPTIONAL_HEADERS = [
+    HEADER_CLUSTER_URL,
+    HEADER_REPORTS_KEY,
+    HEADER_REPORTS_SECRET,
+    HEADER_PPS_BASE_URL,
+    HEADER_PPS_USERNAME,
+    HEADER_PPS_PASSWORD,
+]
 
 _PLACEHOLDER = re.compile(r"^\$\{.*\}$")
 
@@ -67,8 +80,9 @@ INSTRUCTIONS = (
     "- proofpoint_url_decode turns rewritten urldefense URLs back into the original.\n"
     "- reports_* need a separate Dashboard Reports API key; each report section "
     "allows 20 calls a day.\n"
-    "- Quarantine, policy, DLP and message-pull tools are not part of the TAP API "
-    "and return an error explaining that.\n"
+    "- quarantine_* need separate Proofpoint Protection Server credentials; without "
+    "them they return not_configured. Policy, DLP and message-pull tools are not "
+    "part of any Proofpoint API and return an error explaining that.\n"
     "Quotas are tight (People and Campaign: 50 calls per 24h); avoid repeating calls."
 )
 
@@ -101,6 +115,29 @@ def normalize_base_url(value: str | None) -> str:
         raise ValueError(f"{HEADER_CLUSTER_URL} must be an https URL on a proofpoint.com host")
     if parts.username or parts.password or parts.query or parts.fragment or parts.path not in ("", "/"):
         raise ValueError(f"{HEADER_CLUSTER_URL} must be a bare host URL such as {DEFAULT_TAP_URL}")
+    port = f":{parts.port}" if parts.port else ""
+    return f"https://{host}{port}"
+
+
+def normalize_pps_base_url(value: str | None) -> str | None:
+    """The PPS base URL: https, a bare host, no path/query/userinfo.
+
+    Unlike normalize_base_url there is no domain-suffix allowlist: PPS cloud tenants are on
+    *.pphosted.com and on-prem tenants are on an arbitrary customer host, so there is no single
+    Proofpoint domain to pin to (flagged in the technical design under Non-functional /
+    Host validation trade-off). None when the header is absent -- PPS credentials are optional.
+    """
+    if not value:
+        return None
+    text = value.strip().rstrip("/")
+    if "://" not in text:
+        text = "https://" + text
+    parts = urlsplit(text)
+    host = (parts.hostname or "").lower()
+    if parts.scheme != "https" or not host:
+        raise ValueError(f"{HEADER_PPS_BASE_URL} must be an https URL with a host")
+    if parts.username or parts.password or parts.query or parts.fragment or parts.path not in ("", "/"):
+        raise ValueError(f"{HEADER_PPS_BASE_URL} must be a bare host URL such as https://tenant.pphosted.com:10000")
     port = f":{parts.port}" if parts.port else ""
     return f"https://{host}{port}"
 
@@ -143,13 +180,27 @@ class GatewayCredentialsMiddleware:
             # host, and tools return header_error before any request.
             base_url = DEFAULT_TAP_URL
 
+        pps_header_error = None
+        try:
+            pps_base_url = normalize_pps_base_url(values[HEADER_PPS_BASE_URL])
+        except ValueError as e:
+            # Kept separate from header_error: unlike the TAP cluster URL, a malformed PPS URL
+            # must not block the TAP/Reports tools (PPS is optional) -- only the quarantine
+            # tools check pps_header_error, so the rest of the connector keeps working.
+            pps_header_error = str(e)
+            pps_base_url = None
+
         credentials = ProofpointCredentials(
             principal=values[HEADER_PRINCIPAL] or "",
             secret=values[HEADER_SECRET] or "",
             base_url=base_url,
             reports_key=values[HEADER_REPORTS_KEY],
             reports_secret=values[HEADER_REPORTS_SECRET],
+            pps_base_url=pps_base_url,
+            pps_username=values[HEADER_PPS_USERNAME],
+            pps_password=values[HEADER_PPS_PASSWORD],
             header_error=header_error,
+            pps_header_error=pps_header_error,
         )
         request_id = (request.headers.get("x-request-id") or "").strip()[:64] or uuid.uuid4().hex[:12]
         creds_token = _credentials_var.set(credentials)
@@ -174,9 +225,9 @@ def create_mcp_server(settings: Settings | None = None) -> FastMCP:
 
     client_factory: Callable[[], ProofpointClient | None] = get_client_from_context
 
-    from .tools import navigation, people, reports, search, tap, threats, unsupported, urls
+    from .tools import navigation, people, quarantine, reports, search, tap, threats, unsupported, urls
 
-    for module in (navigation, tap, search, threats, people, urls, reports, unsupported):
+    for module in (navigation, tap, search, threats, people, urls, reports, quarantine, unsupported):
         module.register(mcp, client_factory)
 
     return mcp

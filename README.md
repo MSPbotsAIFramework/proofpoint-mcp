@@ -1,11 +1,14 @@
 # Proofpoint MCP Server
 
 An [MCP](https://modelcontextprotocol.io) server for Proofpoint
-[Targeted Attack Protection (TAP)](https://www.proofpoint.com/us/products/advanced-threat-protection/targeted-attack-protection),
-used by MSPs and security teams to investigate email threats. It lets an AI agent read the TAP
-SIEM feed (threat messages delivered or blocked, malicious URL clicks), search those messages,
-drill into threats, campaigns and sandbox forensics, see the most attacked people and top
-clickers, decode URL Defense links, and, with a separate key, read the Dashboard reports.
+[Targeted Attack Protection (TAP)](https://www.proofpoint.com/us/products/advanced-threat-protection/targeted-attack-protection)
+and, independently, **Proofpoint Essentials** (a different Proofpoint product), used by MSPs and
+security teams to investigate email threats. It lets an AI agent read the TAP SIEM feed (threat
+messages delivered or blocked, malicious URL clicks), search those messages, drill into threats,
+campaigns and sandbox forensics, see the most attacked people and top clickers, decode URL
+Defense links, and, with a separate key, read the Dashboard reports. With its own, independent
+credentials it can also read an Essentials organization's domain and user inventory, and
+Essentials' own SIEM-shaped threat feed.
 
 - Transport: MCP Streamable HTTP at `POST /mcp`, health probe at `GET /health`
 - Stateless and multi-tenant: credentials arrive on every request as HTTP headers and are
@@ -88,13 +91,25 @@ Links: [connect.mspbots.ai](https://connect.mspbots.ai) · [mspbots.ai](https://
 
 ## Authentication headers
 
+Three credential sets are recognised -- **TAP**, **Proofpoint Essentials Admin**, and
+**Proofpoint Essentials Threat** -- and each is independent: a request needs at least one of
+them fully present, but never more than one, and sending one never requires or affects the
+others. A caller that only ever sends TAP headers is completely unaffected by the two Essentials
+sets existing.
+
 | Header | Required | Type | Default | Allowed values | Description | Example |
 |---|---|---|---|---|---|---|
-| `X-Proofpoint-Service-Principal` | Yes | string | none | - | TAP service principal | `your-service-principal` |
-| `X-Proofpoint-Service-Secret` | Yes | string | none | - | TAP service secret | `your-service-secret` |
+| `X-Proofpoint-Service-Principal` | with `-Secret` | string | none | - | TAP service principal | `your-service-principal` |
+| `X-Proofpoint-Service-Secret` | with `-Principal` | string | none | - | TAP service secret | `your-service-secret` |
 | `X-Proofpoint-Cluster-Url` | No | string | `https://tap-api-v2.proofpoint.com` | https URL on a `proofpoint.com` host | TAP API base URL | `https://tap-api-v2.proofpoint.com` |
 | `X-Proofpoint-Reports-Key` | No | string | none | - | Dashboard Reports API key (only for `reports_*` tools) | `your-reports-key` |
 | `X-Proofpoint-Reports-Secret` | No | string | none | - | Dashboard Reports API secret | `your-reports-secret` |
+| `X-Proofpoint-Essentials-User` | with `-Password` | string | none | - | Essentials Organization Admin username | `admin@example.com` |
+| `X-Proofpoint-Essentials-Password` | with `-User` | string | none | - | Essentials Organization Admin password | `your-essentials-password` |
+| `X-Proofpoint-Essentials-Admin-Url` | No | string | `https://us1.proofpointessentials.com/api/v1` | https URL on a `proofpointessentials.com` host | Essentials Admin regional stack base URL | `https://us5.proofpointessentials.com/api/v1` |
+| `X-Proofpoint-Essentials-Threat-Key` | with `-Secret` | string | none | - | Essentials Threat API Integration Key | `your-threat-key` |
+| `X-Proofpoint-Essentials-Threat-Secret` | with `-Key` | string | none | - | Essentials Threat API Integration Secret | `your-threat-secret` |
+| `X-Proofpoint-Essentials-Threat-Url` | No | string | `https://us-siem.proofpointessentials.com` | https URL on a `proofpointessentials.com` host | Essentials Threat API host | `https://eu-siem.proofpointessentials.com` |
 
 Where to get them:
 
@@ -103,19 +118,28 @@ Where to get them:
 - **Reports API key (optional):** in the Admin Portal open **Settings -> API Key Management ->
   Threat Protection** and choose **Create New**. The TAP service principal is not accepted by
   the Reports API, so the four `reports_*` tools need this second pair.
+- **Essentials Admin credentials:** a Proofpoint Essentials Organization Admin username and
+  password for the organization to read.
+- **Essentials Threat API credentials:** an Integration Key/Secret pair, separate from both TAP
+  and Essentials Admin (see [Essentials Threat API docs](https://help.proofpoint.com/Essentials/Additional_Resources/API_Documentation/Essentials_Threat_API)).
 
 How credentials are sent to Proofpoint: TAP calls go to the cluster URL
 (`https://tap-api-v2.proofpoint.com/v2/...`) with HTTP Basic authentication
 (`principal:secret`). Reports calls first get a Bearer token from
 `POST https://auth.proofpoint.com/v1/token` (client credentials grant with the reports key and
 secret), then call `https://threatprotection-api.proofpoint.com/api/v1/dash/reports/...`; the
-token is used only within the one request. A cluster URL that is not https on a
-`proofpoint.com` host does not block the request (tools/list still works), but every tool call
-then returns an `invalid_argument` error before any outbound request, so credentials can never be
-sent elsewhere.
+token is used only within the one request. Essentials Admin calls send `X-User` / `X-Password`
+as literal headers (not HTTP Basic) to the Admin base URL. Essentials Threat calls use HTTP
+Basic with the Integration Key/Secret against the Threat base URL, the same way TAP does.
+A base-url header that is not https on its required host does not block the request (tools/list
+still works), but every tool call then returns an `invalid_argument` error before any outbound
+request, so credentials can never be sent elsewhere.
 Values that look like unresolved templates (`${...}`) are treated as missing.
 
-A request to `/mcp` without the principal and secret gets HTTP 401 naming the missing ones.
+A request to `/mcp` with none of the three credential sets fully present gets HTTP 401 naming
+all three options. Sending only TAP headers (today's behavior) is unaffected; calling an
+Essentials tool without its credentials returns a `not_configured` error naming the missing
+headers instead of a 401, since the gateway already let the request through on another set.
 
 ## Tools
 
@@ -162,6 +186,16 @@ hour) or `interval` (ISO8601, 30 seconds to 1 hour, e.g.
 | `proofpoint_policy_list` / `_get` / `_list_routes` | Unavailable (see below) | as before |
 | `proofpoint_dlp_list_incidents` / `_get_incident` / `_list_encrypted` | Unavailable (see below) | as before |
 | `proofpoint_forensics_pull_messages` | Unavailable (see below) | **message_ids**, reason |
+| `proofpoint_essentials_list_domains` | Essentials: domains in an organization | **org_domain**, page, size, offset |
+| `proofpoint_essentials_get_domain` | Essentials: one domain's record | **org_domain**, **domain** |
+| `proofpoint_essentials_list_users` | Essentials: users in an organization | **org_domain**, page, size, offset |
+| `proofpoint_essentials_get_user` | Essentials: one user's record | **org_domain**, **email** |
+| `proofpoint_essentials_threat_get_messages_blocked` | Essentials: threat messages blocked or quarantined in a window | sinceSeconds, sinceTime, interval, threatStatus, threatType, format, max_events |
+| `proofpoint_essentials_threat_get_messages_delivered` | Essentials: threat messages delivered in a window | same as above |
+| `proofpoint_essentials_threat_get_clicks_blocked` | Essentials: malicious URL clicks blocked in a window | same as above |
+| `proofpoint_essentials_threat_get_clicks_permitted` | Essentials: malicious URL clicks allowed through in a window | same as above |
+| `proofpoint_essentials_threat_get_issues` | Essentials: permitted clicks and delivered messages combined | same as above |
+| `proofpoint_essentials_threat_get_all` | Essentials: every threat message and click event in a window | same as above |
 
 Errors come back as a JSON envelope instead of an exception:
 
@@ -170,7 +204,9 @@ Errors come back as a JSON envelope instead of an exception:
 ```
 
 `code` is one of `not_configured`, `unauthorized`, `not_found`, `invalid_argument`,
-`rate_limited`, `upstream_error`.
+`rate_limited`, `upstream_error`. `not_configured` from an `essentials_*` tool means that
+request's credential set (Essentials Admin or Essentials Threat) was not sent -- it can still
+happen alongside valid TAP credentials, since the three sets are independent.
 
 **Quotas.** Proofpoint throttles per credential over a rolling 24 hours: SIEM 1800 calls,
 People 50, Campaign 50, Forensics 50 per threat id; Reports allow 10 calls a minute and 20 a day
@@ -213,6 +249,14 @@ curl -s http://localhost:8080/mcp \
   -H "X-Proofpoint-Service-Principal: your-service-principal" \
   -H "X-Proofpoint-Service-Secret: your-service-secret" \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"proofpoint_tap_get_messages_delivered","arguments":{"sinceSeconds":1800}}}'
+
+# Proofpoint Essentials: domains in an organization (independent credentials, no TAP headers needed)
+curl -s http://localhost:8080/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "X-Proofpoint-Essentials-User: admin@example.com" \
+  -H "X-Proofpoint-Essentials-Password: your-essentials-password" \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"proofpoint_essentials_list_domains","arguments":{"org_domain":"example.com"}}}'
 ```
 
 Unit tests (no network access needed):
@@ -223,8 +267,16 @@ uv run pytest
 
 ## Delivery notes
 
-- **Tool count (40).** Kept as is because the tool names are an existing contract; every tool is
-  listed from the first `tools/list`.
+- **Tool count (50).** The 40 original tool names are kept as is because they are an existing
+  contract; the 10 Essentials tools (PRD-21255) are additive -- no existing tool was renamed or
+  removed, and no existing header became required.
+- **Proofpoint Essentials is a separate v1 scope (PRD-21255).** Essentials is a different
+  product from TAP (different base URL, different credentials, different API shape). This
+  version ships read-only Domains, Users and the Essentials Threat API (the ticket's actual ask:
+  live, read, logged access); Essentials Organization/Features/Licensing/Reporting/Package and
+  any write tools are out of scope because the exact field names for the first group could not be
+  confirmed from a static doc fetch, and the second would need its own destructive-tool safety
+  review. See `docs/tickets/PRD-21255.md` for the full design and the `.ac.json` test cases.
 - **Real endpoints only.** Earlier versions called paths that the TAP API does not have
   (`/v1/quarantine`, `/v1/policies`, `/v1/dlp/...`, `/v1/smart-search`, `/v2/events/...`,
   `/v1/reports/...`, `/v2/threat/families`, `/v2/url/analyze`, `/v2/people/{email}`). Each tool
@@ -250,6 +302,12 @@ uv run pytest
   by page number, and a page cut to fit the size limit has its rest on no other page. They also
   take `offset` (record position, overriding `page`) and return `next_offset`, which continues
   right after the last record returned; pass it back to read every record exactly once.
+  `essentials_list_domains` / `essentials_list_users` use the same offset/next_offset contract,
+  but page client-side over a list fetched once per call rather than sending `page`/`size` to
+  the vendor: the Essentials Admin API's own pagination contract could not be confirmed from a
+  static doc fetch (no account available -- see "Proofpoint Essentials is a separate v1 scope"
+  above), and this is correct regardless of what the vendor's own paging does, at the cost of
+  re-fetching the full list on every page for very large organizations.
 - **No interactive prompts or UI cards.** The stateless gateway cannot relay them; missing
   information is a required parameter or an error instead.
 

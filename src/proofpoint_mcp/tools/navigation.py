@@ -20,7 +20,7 @@ from pydantic import Field
 
 from .._json import compact as to_json
 from ..api_client import ProofpointClient, ProofpointError
-from ._common import LOCAL, READ_ONLY, ClientFactory, run_tool
+from ._common import LOCAL, READ_ONLY, ClientFactory, path_segment, run_tool
 
 # A threat id that cannot exist: the Threat API has no quota, and its answer
 # (401 versus 404 / 400) tells whether the credentials are accepted.
@@ -97,12 +97,51 @@ DOMAINS: dict[str, tuple[str, list[str]]] = {
         "Unavailable: DLP and encryption are not part of the TAP API.",
         ["proofpoint_dlp_list_incidents", "proofpoint_dlp_get_incident", "proofpoint_dlp_list_encrypted"],
     ),
+    "essentials_admin": (
+        "Proofpoint Essentials (a different product from TAP): domain and user inventory for one "
+        "organization. Needs its own Essentials Admin username/password, independent of TAP.",
+        [
+            "proofpoint_essentials_list_domains",
+            "proofpoint_essentials_get_domain",
+            "proofpoint_essentials_list_users",
+            "proofpoint_essentials_get_user",
+        ],
+    ),
+    "essentials_threat": (
+        "Proofpoint Essentials Threat API: the same SIEM feed shape as TAP, on Essentials' own "
+        "host and Integration Key/Secret, independent of both TAP and Essentials Admin.",
+        [
+            "proofpoint_essentials_threat_get_messages_blocked",
+            "proofpoint_essentials_threat_get_messages_delivered",
+            "proofpoint_essentials_threat_get_clicks_blocked",
+            "proofpoint_essentials_threat_get_clicks_permitted",
+            "proofpoint_essentials_threat_get_issues",
+            "proofpoint_essentials_threat_get_all",
+        ],
+    ),
 }
 
 DomainName = Literal[
     "tap", "events", "smart_search", "forensics", "threat_intel", "people", "url_defense", "reports",
-    "quarantine", "policy", "dlp",
+    "quarantine", "policy", "dlp", "essentials_admin", "essentials_threat",
 ]
+
+
+async def _probe_essentials_admin(client: ProofpointClient, org_domain: str) -> dict:
+    """Whether Essentials Admin accepts the credentials, probed against one org's domains."""
+    try:
+        org = path_segment(org_domain, "org_domain")
+        await client.essentials_admin("GET", f"/orgs/{org}/domains", {"size": 1})
+        return {"authorized": True}
+    except ProofpointError as e:
+        if e.status_code in (401, 403):
+            return {"authorized": False, "error": e.message}
+        if e.status_code == 404:
+            # The org itself may not exist, which still proves the credentials were accepted.
+            return {"authorized": True}
+        return {"authorized": None, "error": e.message}
+    except ValueError as e:
+        return {"authorized": None, "error": str(e)}
 
 
 def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
@@ -113,8 +152,18 @@ def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
         return to_json({"domain": domain, "summary": summary, "tools": tools})
 
     @mcp.tool(annotations=READ_ONLY)
-    async def proofpoint_status() -> str:
-        """Check the credentials: whether TAP accepts the service principal and whether Reports keys were sent."""
+    async def proofpoint_status(
+        org_domain: Annotated[
+            str | None,
+            Field(description="Optional Essentials organization domain, to also probe Essentials Admin authorization."),
+        ] = None,
+    ) -> str:
+        """Check the credentials: TAP and (with org_domain) Essentials Admin authorization, and which
+        optional sets were sent.
+
+        TAP, Essentials Admin and Essentials Threat (PRD-21255) are independent credential sets;
+        this reports each one that was sent, without requiring the others.
+        """
 
         async def action(client: ProofpointClient) -> dict:
             tap: dict
@@ -128,10 +177,21 @@ def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
                     tap = {"authorized": True}
                 else:
                     tap = {"authorized": None, "error": e.message}
-            return {
+            result: dict = {
                 "tap": tap,
                 "reports_credentials_sent": client.has_reports_credentials,
+                "essentials_admin_credentials_sent": client.has_essentials_admin_credentials,
+                "essentials_threat_credentials_sent": client.has_essentials_threat_credentials,
                 "domains": {name: summary for name, (summary, _tools) in DOMAINS.items()},
             }
+            if client.has_essentials_admin_credentials:
+                if org_domain:
+                    result["essentials_admin"] = await _probe_essentials_admin(client, org_domain)
+                else:
+                    result["essentials_admin"] = {
+                        "authorized": None,
+                        "note": "Pass org_domain to proofpoint_status to probe Essentials Admin authorization.",
+                    }
+            return result
 
         return await run_tool("proofpoint_status", client_factory, action)

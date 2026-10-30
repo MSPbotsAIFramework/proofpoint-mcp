@@ -1,0 +1,93 @@
+[
+  {
+    "id": "TC-PFE-001",
+    "ac": "AC1",
+    "text": "Given Essentials Admin credentials are sent, when tools/list is called, then the response includes the 4 proofpoint_essentials_* admin tools and all 6 proofpoint_essentials_threat_* tools, and still includes every pre-existing tool name.",
+    "type": "auto",
+    "tests": []
+  },
+  {
+    "id": "TC-PFE-002",
+    "ac": "AC2",
+    "text": "Given Essentials Admin credentials for an org with domains, when proofpoint_essentials_list_domains is called, then the result is a JSON object with a domains list and no error key.",
+    "type": "auto",
+    "tests": []
+  },
+  {
+    "id": "TC-PFE-003",
+    "ac": "AC2",
+    "text": "Given an org with more domains than one page, when proofpoint_essentials_list_domains is called with offset taken from a previous call's next_offset, then the next page starts exactly after the last record previously returned, with no record skipped or repeated.",
+    "type": "auto",
+    "tests": []
+  },
+  {
+    "id": "TC-PFE-004",
+    "ac": "AC3",
+    "text": "Given Essentials Admin credentials, when proofpoint_essentials_get_user is called with an email that does not exist in that org, then the result's error.code is not_found.",
+    "type": "auto",
+    "tests": []
+  },
+  {
+    "id": "TC-PFE-005",
+    "ac": "AC4",
+    "text": "Given Essentials Threat credentials, when proofpoint_essentials_threat_get_messages_blocked is called with no time arguments, then the result covers the last hour and is shaped like proofpoint_tap_get_messages_blocked's result (queryEndTime, counts, capped lists).",
+    "type": "manual",
+    "steps": [
+      "Obtain a real Proofpoint Essentials Threat API Integration Key/Secret for a test org (none available to DEV01 at design time)",
+      "Start the server locally and send tools/call proofpoint_essentials_threat_get_messages_blocked with X-Proofpoint-Essentials-Threat-Key / -Secret headers and no time arguments",
+      "Compare the response shape against proofpoint_tap_get_messages_blocked's documented shape"
+    ],
+    "expect": "200 response with queryEndTime, a counts object, and capped event lists in the same shape as the TAP equivalent tool; no error key",
+    "result": "untested",
+    "notes": "No real Essentials account available at design time -- not a blocker per references/mcp-track.md 2.5. Covered at design time by mocked-transport unit tests and the documented API contract instead; this manual case runs once a real account is available."
+  },
+  {
+    "id": "TC-PFE-006",
+    "ac": "AC4",
+    "text": "Given a sinceSeconds value over 3600, when any proofpoint_essentials_threat_* tool is called, then the result is an invalid_argument error naming the one-hour limit.",
+    "type": "auto",
+    "tests": []
+  },
+  {
+    "id": "TC-PFE-007",
+    "ac": "AC5",
+    "text": "Given no Proofpoint headers of any kind are sent, when any /mcp request is made, then the response is HTTP 401 and the body names all three credential options (TAP service principal/secret, Essentials user/password, Essentials threat key/secret).",
+    "type": "auto",
+    "tests": []
+  },
+  {
+    "id": "TC-PFE-008",
+    "ac": "AC6",
+    "text": "Given only TAP headers are sent (no Essentials headers at all), when proofpoint_tap_get_all_threats is called, then it returns 200 with the same shape as before this change (regression guard).",
+    "type": "auto",
+    "tests": []
+  },
+  {
+    "id": "TC-PFE-009",
+    "ac": "AC6",
+    "text": "Given only TAP headers are sent, when proofpoint_essentials_list_domains is called, then the result's error.code is not_configured and names the two missing Essentials headers; the gateway does not return 401.",
+    "type": "auto",
+    "tests": []
+  },
+  {
+    "id": "TC-PFE-010",
+    "ac": "AC6",
+    "text": "Given only Essentials Admin headers are sent (no TAP headers at all), when proofpoint_essentials_list_domains is called, then it returns 200 -- the gateway does not 401 for a missing TAP header once another valid credential set is present.",
+    "type": "auto",
+    "tests": []
+  },
+  {
+    "id": "TC-PFE-011",
+    "ac": "AC7",
+    "text": "Given Essentials Admin credentials that Proofpoint rejects (401), when any Essentials Admin tool is called, then the result's error.code is unauthorized and retryable is false.",
+    "type": "auto",
+    "tests": []
+  },
+  {
+    "id": "TC-PFE-012",
+    "ac": "AC8",
+    "text": "Given two concurrent requests carry two different orgs' Essentials Admin credentials, when both call proofpoint_essentials_list_domains at the same time, then each response contains only its own org's domains, and neither request's credentials appear in the other's logs or response.",
+    "type": "auto",
+    "tests": []
+  }
+]

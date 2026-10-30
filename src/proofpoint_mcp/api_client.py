@@ -105,8 +105,18 @@ class ProofpointCredentials:
     base_url: str
     reports_key: str | None = None
     reports_secret: str | None = None
+    # Proofpoint Essentials: a different product from TAP, independent credential sets
+    # (PRD-21255). Any of (principal, secret), (essentials_user, essentials_password) or
+    # (essentials_threat_key, essentials_threat_secret) satisfies the gateway on its own.
+    essentials_user: str | None = None
+    essentials_password: str | None = None
+    essentials_admin_url: str | None = None
+    essentials_threat_key: str | None = None
+    essentials_threat_secret: str | None = None
+    essentials_threat_url: str | None = None
     # Proofpoint Protection Server (PPS): a second, independent, optional credential set that
-    # only the quarantine tools use (PRD-21254). TAP-only tenants leave all three None.
+    # only the quarantine tools use (PRD-21254). TAP-only tenants leave all three None. Unlike
+    # the Essentials sets above, PPS does not join the gateway's "at least one of these" rule.
     pps_base_url: str | None = None
     pps_username: str | None = None
     pps_password: str | None = None
@@ -114,12 +124,18 @@ class ProofpointCredentials:
     # instead of calling Proofpoint, while tools/list still works.
     header_error: str | None = None
     # Same idea as header_error, but scoped to the PPS base URL only: a malformed value must not
-    # block the TAP/Reports tools (PPS is optional), so it is kept separate and only the
-    # quarantine tools check it.
+    # block the TAP/Reports/Essentials tools (PPS is optional), so it is kept separate and only
+    # the quarantine tools check it.
     pps_header_error: str | None = None
 
     def __repr__(self) -> str:  # never leak secrets into logs or tracebacks
-        return f"ProofpointCredentials(principal=<redacted>, secret=<redacted>, base_url={self.base_url!r})"
+        return (
+            "ProofpointCredentials(principal=<redacted>, secret=<redacted>, "
+            f"base_url={self.base_url!r}, essentials_user=<redacted>, "
+            "essentials_password=<redacted>, essentials_threat_key=<redacted>, "
+            "essentials_threat_secret=<redacted>, pps_username=<redacted>, "
+            "pps_password=<redacted>)"
+        )
 
 
 class ProofpointClient:
@@ -140,6 +156,14 @@ class ProofpointClient:
     @property
     def has_reports_credentials(self) -> bool:
         return bool(self._credentials.reports_key and self._credentials.reports_secret)
+
+    @property
+    def has_essentials_admin_credentials(self) -> bool:
+        return bool(self._credentials.essentials_user and self._credentials.essentials_password)
+
+    @property
+    def has_essentials_threat_credentials(self) -> bool:
+        return bool(self._credentials.essentials_threat_key and self._credentials.essentials_threat_secret)
 
     @property
     def has_pps_credentials(self) -> bool:
@@ -205,6 +229,49 @@ class ProofpointClient:
         url = f"{REPORTS_API}/{path.lstrip('/')}"
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
         return await self._send("GET", url, f"reports/{path.lstrip('/')}", params, None, headers, True)
+
+    async def essentials_admin(
+        self,
+        method: str,
+        path: str,
+        params: list[tuple[str, Any]] | dict[str, Any] | None = None,
+        body: Any = None,
+    ) -> Any:
+        """Call the Proofpoint Essentials Admin/Reporting API.
+
+        Auth is two literal headers (X-User / X-Password), not HTTP Basic -- the one place the
+        auth shape differs from every other method on this client.
+        """
+        if not self.has_essentials_admin_credentials:
+            raise ValueError(
+                "Proofpoint Essentials Admin credentials are missing for this request "
+                "(X-Proofpoint-Essentials-User, X-Proofpoint-Essentials-Password)."
+            )
+        url = f"{self._credentials.essentials_admin_url}/{path.lstrip('/')}"
+        headers = {
+            "X-User": self._credentials.essentials_user or "",
+            "X-Password": self._credentials.essentials_password or "",
+            "Accept": "application/json",
+        }
+        label = f"essentials_admin/{path.lstrip('/')}"
+        return await self._send(method, url, label, params, body, headers, method == "GET")
+
+    async def essentials_threat(self, path: str, params: list[tuple[str, Any]] | dict[str, Any] | None = None) -> Any:
+        """Call the Essentials Threat API (HTTP Basic with the Integration Key/Secret).
+
+        Structurally identical to ``tap()`` -- same SIEM path shape, just a different credential
+        pair and host.
+        """
+        if not self.has_essentials_threat_credentials:
+            raise ValueError(
+                "Proofpoint Essentials Threat API credentials are missing for this request "
+                "(X-Proofpoint-Essentials-Threat-Key, X-Proofpoint-Essentials-Threat-Secret)."
+            )
+        url = f"{self._credentials.essentials_threat_url}/{path.lstrip('/')}"
+        raw = f"{self._credentials.essentials_threat_key}:{self._credentials.essentials_threat_secret}".encode()
+        headers = {"Authorization": "Basic " + base64.b64encode(raw).decode(), "Accept": "application/json"}
+        label = f"essentials_threat/{path.lstrip('/')}"
+        return await self._send("GET", url, label, params, None, headers, True)
 
     async def _get_reports_token(self) -> str:
         async with self._token_lock:

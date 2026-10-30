@@ -1,0 +1,118 @@
+[
+  {
+    "id": "TC-PFE-001",
+    "ac": "AC1",
+    "text": "Given Essentials Admin credentials are sent, when tools/list is called, then the response includes the 4 proofpoint_essentials_* admin tools and all 6 proofpoint_essentials_threat_* tools, and still includes every pre-existing tool name.",
+    "type": "auto",
+    "tests": ["tests/test_tools.py::test_all_tools_listed", "tests/test_tools.py::test_navigation_covers_every_tool"],
+    "result": "pass",
+    "evidence": "uv run pytest tests/test_tools.py::test_all_tools_listed tests/test_tools.py::test_navigation_covers_every_tool -> 2 passed. EXPECTED_TOOLS now has 50 entries (40 pre-existing + 10 Essentials); create_mcp_server().list_tools() returns exactly that set."
+  },
+  {
+    "id": "TC-PFE-002",
+    "ac": "AC2",
+    "text": "Given Essentials Admin credentials for an org with domains, when proofpoint_essentials_list_domains is called, then the result is a JSON object with a domains list and no error key.",
+    "type": "auto",
+    "tests": ["tests/test_api_client.py::test_essentials_list_domains_shape"],
+    "result": "pass",
+    "evidence": "uv run pytest tests/test_api_client.py::test_essentials_list_domains_shape -> 1 passed. Mocked GET /orgs/example.com/domains returns 5 rows; tool result has domains (5 entries, same order), count=5, has_more=False, no error key."
+  },
+  {
+    "id": "TC-PFE-003",
+    "ac": "AC2",
+    "text": "Given an org with more domains than one page, when proofpoint_essentials_list_domains is called with offset taken from a previous call's next_offset, then the next page starts exactly after the last record previously returned, with no record skipped or repeated.",
+    "type": "auto",
+    "tests": ["tests/test_api_client.py::test_essentials_list_domains_pagination_continuity"],
+    "result": "pass",
+    "evidence": "uv run pytest tests/test_api_client.py::test_essentials_list_domains_pagination_continuity -> 1 passed. Walks 25 mocked domains with size=10 following next_offset each time; concatenated domain list equals the original 25 in order, no gaps or duplicates."
+  },
+  {
+    "id": "TC-PFE-004",
+    "ac": "AC3",
+    "text": "Given Essentials Admin credentials, when proofpoint_essentials_get_user is called with an email that does not exist in that org, then the result's error.code is not_found.",
+    "type": "auto",
+    "tests": ["tests/test_api_client.py::test_essentials_get_user_not_found"],
+    "result": "pass",
+    "evidence": "uv run pytest tests/test_api_client.py::test_essentials_get_user_not_found -> 1 passed. Mocked GET /orgs/example.com/users/missing@example.com returns 404; tool result error.code == \"not_found\"."
+  },
+  {
+    "id": "TC-PFE-005",
+    "ac": "AC4",
+    "text": "Given Essentials Threat credentials, when proofpoint_essentials_threat_get_messages_blocked is called with no time arguments, then the result covers the last hour and is shaped like proofpoint_tap_get_messages_blocked's result (queryEndTime, counts, capped lists).",
+    "type": "manual",
+    "steps": [
+      "Obtain a real Proofpoint Essentials Threat API Integration Key/Secret for a test org (none available to DEV01)",
+      "Start the server locally and send tools/call proofpoint_essentials_threat_get_messages_blocked with X-Proofpoint-Essentials-Threat-Key / -Secret headers and no time arguments",
+      "Compare the response shape against proofpoint_tap_get_messages_blocked's documented shape"
+    ],
+    "expect": "200 response with queryEndTime, a counts object, and capped event lists in the same shape as the TAP equivalent tool; no error key",
+    "result": "untested",
+    "notes": "No real Essentials account available -- not a blocker per references/mcp-track.md 2.5. Covered instead by tests/test_api_client.py::test_essentials_threat_messages_blocked_shape against a mocked transport: the shaping code (shape_siem) is shared verbatim with the already-shipped TAP tools, so the only new surface is the auth/host plumbing, which the client-method tests cover separately. This manual case runs once a real account is available."
+  },
+  {
+    "id": "TC-PFE-006",
+    "ac": "AC4",
+    "text": "Given a sinceSeconds value over 3600, when any proofpoint_essentials_threat_* tool is called, then the result is an invalid_argument error naming the one-hour limit.",
+    "type": "auto",
+    "tests": ["tests/test_api_client.py::test_essentials_threat_window_limit"],
+    "result": "pass",
+    "evidence": "uv run pytest tests/test_api_client.py::test_essentials_threat_window_limit -> 1 passed. sinceSeconds=7200 against proofpoint_essentials_threat_get_messages_blocked returns error.code == \"invalid_argument\" (siem_window, shared with TAP, rejects it before any request is sent -- 0 requests recorded)."
+  },
+  {
+    "id": "TC-PFE-007",
+    "ac": "AC5",
+    "text": "Given no Proofpoint headers of any kind are sent, when any /mcp request is made, then the response is HTTP 401 and the body names all three credential options (TAP service principal/secret, Essentials user/password, Essentials threat key/secret).",
+    "type": "auto",
+    "tests": ["tests/test_middleware.py::test_no_credentials_at_all_is_401_naming_all_three_sets"],
+    "result": "pass",
+    "evidence": "uv run pytest tests/test_middleware.py::test_no_credentials_at_all_is_401_naming_all_three_sets -> 1 passed. POST /mcp with no Proofpoint headers returns 401; body.credential_sets == [[TAP pair], [Essentials Admin pair], [Essentials Threat pair]] and body.message names all 6 header names."
+  },
+  {
+    "id": "TC-PFE-008",
+    "ac": "AC6",
+    "text": "Given only TAP headers are sent (no Essentials headers at all), when proofpoint_tap_get_all_threats is called, then it returns 200 with the same shape as before this change (regression guard).",
+    "type": "auto",
+    "tests": ["tests/test_api_client.py::test_tap_tool_unaffected_by_only_tap_headers_sent", "tests/test_api_client.py::test_tap_all_threats_query_and_cap"],
+    "result": "pass",
+    "evidence": "uv run pytest tests/test_api_client.py -k tap -> all pre-existing TAP tests (unchanged assertions) plus the new explicit regression test pass. Full suite: 422 passed, 4 skipped (pre-existing, unrelated to this ticket -- see docs below)."
+  },
+  {
+    "id": "TC-PFE-009",
+    "ac": "AC6",
+    "text": "Given only TAP headers are sent, when proofpoint_essentials_list_domains is called, then the result's error.code is not_configured and names the two missing Essentials headers; the gateway does not return 401.",
+    "type": "auto",
+    "tests": ["tests/test_api_client.py::test_essentials_tool_without_essentials_admin_creds_is_not_configured"],
+    "result": "pass",
+    "evidence": "uv run pytest tests/test_api_client.py::test_essentials_tool_without_essentials_admin_creds_is_not_configured -> 1 passed. TAP-only credentials calling proofpoint_essentials_list_domains returns error.code == \"not_configured\" naming X-Proofpoint-Essentials-User and X-Proofpoint-Essentials-Password; not a 401 (the call reaches the tool layer at all, which it couldn't if the gateway had rejected it)."
+  },
+  {
+    "id": "TC-PFE-010",
+    "ac": "AC6",
+    "text": "Given only Essentials Admin headers are sent (no TAP headers at all), when proofpoint_essentials_list_domains is called, then it returns 200 -- the gateway does not 401 for a missing TAP header once another valid credential set is present.",
+    "type": "auto",
+    "tests": [
+      "tests/test_middleware.py::test_a_complete_non_tap_set_alone_satisfies_the_gateway",
+      "tests/test_api_client.py::test_essentials_list_domains_works_without_any_tap_headers"
+    ],
+    "result": "pass",
+    "evidence": "uv run pytest -> both pass. Middleware test: POST /mcp with only Essentials Admin (or only Essentials Threat) headers returns 200. Client test: proofpoint_essentials_list_domains called with principal=\"\"/secret=\"\" and Essentials Admin credentials returns {\"domains\": [], ...} with no error, end to end through the real tool/client code path."
+  },
+  {
+    "id": "TC-PFE-011",
+    "ac": "AC7",
+    "text": "Given Essentials Admin credentials that Proofpoint rejects (401), when any Essentials Admin tool is called, then the result's error.code is unauthorized and retryable is false.",
+    "type": "auto",
+    "tests": ["tests/test_api_client.py::test_essentials_admin_unauthorized"],
+    "result": "pass",
+    "evidence": "uv run pytest tests/test_api_client.py::test_essentials_admin_unauthorized -> 1 passed. Mocked 401 from /orgs/example.com/domains maps to error == {\"code\": \"unauthorized\", \"message\": \"...rejected...\", \"retryable\": false} via the same classify_status table TAP uses."
+  },
+  {
+    "id": "TC-PFE-012",
+    "ac": "AC8",
+    "text": "Given two concurrent requests carry two different orgs' Essentials Admin credentials, when both call proofpoint_essentials_list_domains at the same time, then each response contains only its own org's domains, and neither request's credentials appear in the other's logs or response.",
+    "type": "auto",
+    "tests": ["tests/test_middleware.py::test_concurrent_requests_do_not_share_essentials_credentials"],
+    "result": "pass",
+    "evidence": "uv run pytest tests/test_middleware.py::test_concurrent_requests_do_not_share_essentials_credentials -> 1 passed. Two concurrent GatewayCredentialsMiddleware calls with essentials_user=\"org-a-admin\" / \"org-b-admin\" (0.01s simulated work in between) each observe only their own value before and after the await point -- same per-request contextvar isolation mechanism already proven for TAP's principal field, extended to essentials_user."
+  }
+]

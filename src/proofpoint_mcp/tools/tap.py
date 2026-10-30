@@ -14,6 +14,7 @@
 """SIEM API: threat messages and clicks, as raw lists, filtered events and statistics."""
 
 from collections import Counter
+from collections.abc import Awaitable, Callable
 from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import FastMCP
@@ -69,7 +70,24 @@ def matches_id(event: dict, wanted: str) -> bool:
     return any(str(event.get(f) or "").strip().strip("<>").lower() == target for f in ID_FIELDS)
 
 
-def _register_siem_tool(mcp: FastMCP, client_factory: ClientFactory, name: str, endpoint: str, doc: str) -> None:
+def _register_siem_tool(
+    mcp: FastMCP,
+    client_factory: ClientFactory,
+    name: str,
+    endpoint: str,
+    doc: str,
+    *,
+    caller: Callable[[ProofpointClient, str, list[tuple[str, Any]]], Awaitable[Any]] | None = None,
+    requires: Callable[[ProofpointClient], bool] | None = None,
+    not_configured: str | None = None,
+) -> None:
+    """Register one SIEM-shaped tool.
+
+    ``caller`` picks which credential set/host the request goes out on (default: TAP); a module
+    for another SIEM-shaped API (e.g. Essentials Threat, PRD-21255) passes its own caller plus
+    ``requires``/``not_configured`` instead of duplicating this function.
+    """
+
     async def tool(
         sinceSeconds: SinceSeconds = None,
         sinceTime: SinceTime = None,
@@ -85,10 +103,10 @@ def _register_siem_tool(mcp: FastMCP, client_factory: ClientFactory, name: str, 
     ) -> str:
         async def action(client: ProofpointClient) -> Any:
             window = siem_window(sinceSeconds, sinceTime, interval)
-            payload = await fetch_siem(client, endpoint, window, threatStatus, threatType, format)
+            payload = await fetch_siem(client, endpoint, window, threatStatus, threatType, format, caller)
             return shape_siem(payload, max_events)
 
-        return await run_tool(name, client_factory, action)
+        return await run_tool(name, client_factory, action, requires=requires, not_configured=not_configured)
 
     tool.__name__ = name
     tool.__doc__ = doc

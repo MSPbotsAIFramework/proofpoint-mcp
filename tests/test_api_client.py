@@ -30,6 +30,17 @@ from proofpoint_mcp.tools._common import dates_window, iso, now, siem_window
 TAP = "https://tap-api-v2.proofpoint.com"
 CREDS = ProofpointCredentials(principal="prin", secret="sec", base_url=TAP)
 REPORT_CREDS = ProofpointCredentials(principal="prin", secret="sec", base_url=TAP, reports_key="rk", reports_secret="rs")
+# Proofpoint Essentials (PRD-21255): independent credential sets, no TAP principal/secret at all.
+ESSENTIALS_ADMIN_URL = "https://us1.proofpointessentials.com/api/v1"
+ESSENTIALS_ADMIN_CREDS = ProofpointCredentials(
+    principal="", secret="", base_url=TAP,
+    essentials_user="admin@example.com", essentials_password="pw", essentials_admin_url=ESSENTIALS_ADMIN_URL,
+)
+ESSENTIALS_THREAT_URL = "https://us-siem.proofpointessentials.com"
+ESSENTIALS_THREAT_CREDS = ProofpointCredentials(
+    principal="", secret="", base_url=TAP,
+    essentials_threat_key="key", essentials_threat_secret="secret", essentials_threat_url=ESSENTIALS_THREAT_URL,
+)
 
 THREAT = {
     "threatID": "t1",
@@ -209,6 +220,40 @@ async def test_reports_token_rejected():
     with pytest.raises(ProofpointError) as err:
         await _client(rec, REPORT_CREDS).reports("/x")
     assert err.value.status_code == 401
+
+
+# ---- Proofpoint Essentials client methods (PRD-21255) ----------------------
+
+
+async def test_essentials_admin_sends_literal_user_password_headers():
+    rec = Recorder({"GET us1.proofpointessentials.com/api/v1/orgs/example.com/domains": {"domains": []}})
+    await _client(rec, ESSENTIALS_ADMIN_CREDS).essentials_admin("GET", "/orgs/example.com/domains")
+    request = rec.requests[0]
+    assert request.headers["X-User"] == "admin@example.com"
+    assert request.headers["X-Password"] == "pw"
+    assert "Authorization" not in request.headers  # not HTTP Basic, unlike every other method here
+
+
+async def test_essentials_admin_needs_its_own_credentials():
+    rec = Recorder()
+    with pytest.raises(ValueError, match="Essentials Admin"):
+        await _client(rec, CREDS).essentials_admin("GET", "/orgs/example.com/domains")
+    assert not rec.requests
+
+
+async def test_essentials_threat_sends_basic_auth_on_its_own_host():
+    rec = Recorder({"GET us-siem.proofpointessentials.com/v2/siem/all": {}})
+    await _client(rec, ESSENTIALS_THREAT_CREDS).essentials_threat("/v2/siem/all")
+    request = rec.requests[0]
+    assert request.headers["Authorization"] == "Basic " + base64.b64encode(b"key:secret").decode()
+    assert str(request.url) == "https://us-siem.proofpointessentials.com/v2/siem/all"
+
+
+async def test_essentials_threat_needs_its_own_credentials():
+    rec = Recorder()
+    with pytest.raises(ValueError, match="Essentials Threat"):
+        await _client(rec, CREDS).essentials_threat("/v2/siem/all")
+    assert not rec.requests
 
 
 # ---- time windows ----------------------------------------------------------
@@ -474,6 +519,148 @@ async def test_status_probe_reports_pps_credentials_sent(monkeypatch):
     )
     out = await _call(monkeypatch, rec, "proofpoint_status", {}, creds)
     assert out["pps_credentials_sent"] is True
+
+
+async def test_status_reports_essentials_credentials_sent(monkeypatch):
+    rec = Recorder({f"GET tap-api-v2.proofpoint.com/v2/threat/summary/{'0' * 64}": httpx.Response(404)})
+    out = await _call(monkeypatch, rec, "proofpoint_status", {})
+    assert out["essentials_admin_credentials_sent"] is False and out["essentials_threat_credentials_sent"] is False
+    assert "essentials_admin" not in out
+
+
+async def test_status_probes_essentials_admin_when_org_domain_given(monkeypatch):
+    rec = Recorder({
+        f"GET tap-api-v2.proofpoint.com/v2/threat/summary/{'0' * 64}": httpx.Response(404),
+        "GET us1.proofpointessentials.com/api/v1/orgs/example.com/domains": {"domains": []},
+    })
+    out = await _call(monkeypatch, rec, "proofpoint_status", {"org_domain": "example.com"}, ESSENTIALS_ADMIN_CREDS)
+    assert out["essentials_admin_credentials_sent"] is True
+    assert out["essentials_admin"] == {"authorized": True}
+
+
+async def test_status_without_org_domain_does_not_probe_essentials_admin(monkeypatch):
+    rec = Recorder({f"GET tap-api-v2.proofpoint.com/v2/threat/summary/{'0' * 64}": httpx.Response(404)})
+    out = await _call(monkeypatch, rec, "proofpoint_status", {}, ESSENTIALS_ADMIN_CREDS)
+    assert out["essentials_admin"]["authorized"] is None
+    # only the forced TAP probe ran; no call to the Essentials host
+    assert all("proofpointessentials.com" not in str(r.url) for r in rec.requests)
+
+
+# ---- Proofpoint Essentials tools (PRD-21255) --------------------------------
+
+DOMAIN_ROWS = [{"domain": f"d{i:03d}.example.com", "verified": True} for i in range(25)]
+
+
+async def test_essentials_list_domains_shape(monkeypatch):
+    # TC-PFE-002 (AC2)
+    rec = Recorder({"GET us1.proofpointessentials.com/api/v1/orgs/example.com/domains": {"domains": DOMAIN_ROWS[:5]}})
+    out = await _call(
+        monkeypatch, rec, "proofpoint_essentials_list_domains", {"org_domain": "example.com", "size": 10},
+        ESSENTIALS_ADMIN_CREDS,
+    )
+    assert "error" not in out
+    assert [d["domain"] for d in out["domains"]] == [r["domain"] for r in DOMAIN_ROWS[:5]]
+    assert out["count"] == 5 and out["has_more"] is False and "next_offset" not in out
+
+
+async def test_essentials_list_domains_pagination_continuity(monkeypatch):
+    # TC-PFE-003 (AC2): next page starts exactly after the last record previously returned.
+    rec = Recorder({"GET us1.proofpointessentials.com/api/v1/orgs/example.com/domains": {"domains": DOMAIN_ROWS}})
+    args = {"org_domain": "example.com", "size": 10}
+    seen: list[str] = []
+    while True:
+        out = await _call(monkeypatch, rec, "proofpoint_essentials_list_domains", args, ESSENTIALS_ADMIN_CREDS)
+        seen += [d["domain"] for d in out["domains"]]
+        if out.get("next_offset") is None:
+            break
+        args = {"org_domain": "example.com", "size": 10, "offset": out["next_offset"]}
+    assert seen == [r["domain"] for r in DOMAIN_ROWS]  # no record skipped or repeated
+
+
+async def test_essentials_get_domain_not_found(monkeypatch):
+    rec = Recorder({"GET us1.proofpointessentials.com/api/v1/orgs/example.com/domains/missing.example.com": httpx.Response(404)})
+    out = await _call(
+        monkeypatch, rec, "proofpoint_essentials_get_domain",
+        {"org_domain": "example.com", "domain": "missing.example.com"}, ESSENTIALS_ADMIN_CREDS,
+    )
+    assert out["error"]["code"] == "not_found"
+
+
+async def test_essentials_get_user_not_found(monkeypatch):
+    # TC-PFE-004 (AC3)
+    rec = Recorder({"GET us1.proofpointessentials.com/api/v1/orgs/example.com/users/missing@example.com": httpx.Response(404)})
+    out = await _call(
+        monkeypatch, rec, "proofpoint_essentials_get_user",
+        {"org_domain": "example.com", "email": "missing@example.com"}, ESSENTIALS_ADMIN_CREDS,
+    )
+    assert out["error"]["code"] == "not_found"
+
+
+async def test_essentials_admin_unauthorized(monkeypatch):
+    # TC-PFE-011 (AC7)
+    rec = Recorder({"GET us1.proofpointessentials.com/api/v1/orgs/example.com/domains": httpx.Response(401)})
+    out = await _call(
+        monkeypatch, rec, "proofpoint_essentials_list_domains", {"org_domain": "example.com"}, ESSENTIALS_ADMIN_CREDS,
+    )
+    assert out["error"] == {
+        "code": "unauthorized",
+        "message": out["error"]["message"],
+        "retryable": False,
+    }
+    assert "rejected" in out["error"]["message"]
+
+
+async def test_essentials_list_domains_works_without_any_tap_headers(monkeypatch):
+    # TC-PFE-010 (AC6): Essentials Admin alone, principal/secret are empty strings.
+    rec = Recorder({"GET us1.proofpointessentials.com/api/v1/orgs/example.com/domains": {"domains": []}})
+    out = await _call(monkeypatch, rec, "proofpoint_essentials_list_domains", {"org_domain": "example.com"}, ESSENTIALS_ADMIN_CREDS)
+    assert out == {"domains": [], "count": 0, "page": 1, "has_more": False, "offset": 0}
+
+
+async def test_essentials_tool_without_essentials_admin_creds_is_not_configured(monkeypatch):
+    # TC-PFE-009 (AC6): only TAP headers sent -> not_configured, not a 401 (the gateway already let it through).
+    out = await _call(monkeypatch, Recorder(), "proofpoint_essentials_list_domains", {"org_domain": "example.com"}, CREDS)
+    assert out["error"]["code"] == "not_configured"
+    assert "X-Proofpoint-Essentials-User" in out["error"]["message"]
+    assert "X-Proofpoint-Essentials-Password" in out["error"]["message"]
+
+
+async def test_tap_tool_unaffected_by_only_tap_headers_sent(monkeypatch):
+    # TC-PFE-008 (AC6 regression): existing TAP behavior is unchanged by this ticket.
+    out = await _call(monkeypatch, Recorder(siem_route()), "proofpoint_tap_get_all_threats", {}, CREDS)
+    assert "error" not in out
+
+
+async def test_essentials_threat_messages_blocked_shape(monkeypatch):
+    payload = {"queryEndTime": "2026-01-01T13:00:00Z", "messagesBlocked": [BLOCKED], "messagesDelivered": [],
+               "clicksPermitted": [], "clicksBlocked": []}
+    rec = Recorder({"GET us-siem.proofpointessentials.com/v2/siem/messages/blocked": payload})
+    out = await _call(
+        monkeypatch, rec, "proofpoint_essentials_threat_get_messages_blocked", {}, ESSENTIALS_THREAT_CREDS,
+    )
+    assert out["counts"]["messagesBlocked"] == 1
+    assert out["messagesBlocked"][0]["GUID"] == "g-blk"
+
+
+async def test_essentials_threat_window_limit(monkeypatch):
+    # TC-PFE-006 (AC4): same one-hour limit as TAP's SIEM API.
+    out = await _call(
+        monkeypatch, Recorder(), "proofpoint_essentials_threat_get_messages_blocked", {"sinceSeconds": 7200},
+        ESSENTIALS_THREAT_CREDS,
+    )
+    assert out["error"]["code"] == "invalid_argument"
+
+
+async def test_essentials_threat_tool_without_essentials_threat_creds_is_not_configured(monkeypatch):
+    out = await _call(monkeypatch, Recorder(), "proofpoint_essentials_threat_get_all", {}, CREDS)
+    assert out["error"]["code"] == "not_configured"
+    assert "X-Proofpoint-Essentials-Threat-Key" in out["error"]["message"]
+
+
+async def test_essentials_threat_not_affected_by_essentials_admin_creds_alone(monkeypatch):
+    # Independence cuts both ways: Essentials Admin headers alone do not satisfy Essentials Threat.
+    out = await _call(monkeypatch, Recorder(), "proofpoint_essentials_threat_get_all", {}, ESSENTIALS_ADMIN_CREDS)
+    assert out["error"]["code"] == "not_configured"
 
 
 def test_common_has_no_module_level_credentials():

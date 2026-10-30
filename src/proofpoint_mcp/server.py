@@ -27,24 +27,52 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from ._arguments import EnvelopeFastMCP
 from .api_client import ProofpointClient, ProofpointCredentials
-from .config import ALLOWED_HOST_SUFFIX, DEFAULT_TAP_URL, Settings
+from .config import (
+    ALLOWED_ESSENTIALS_ADMIN_SUFFIX,
+    ALLOWED_ESSENTIALS_THREAT_SUFFIX,
+    ALLOWED_HOST_SUFFIX,
+    DEFAULT_ESSENTIALS_ADMIN_URL,
+    DEFAULT_ESSENTIALS_THREAT_URL,
+    DEFAULT_TAP_URL,
+    Settings,
+)
 
 HEADER_PRINCIPAL = "X-Proofpoint-Service-Principal"
 HEADER_SECRET = "X-Proofpoint-Service-Secret"
 HEADER_CLUSTER_URL = "X-Proofpoint-Cluster-Url"
 HEADER_REPORTS_KEY = "X-Proofpoint-Reports-Key"
 HEADER_REPORTS_SECRET = "X-Proofpoint-Reports-Secret"
+# Proofpoint Essentials (PRD-21255): a credential set independent of TAP and of each other.
+HEADER_ESSENTIALS_USER = "X-Proofpoint-Essentials-User"
+HEADER_ESSENTIALS_PASSWORD = "X-Proofpoint-Essentials-Password"
+HEADER_ESSENTIALS_ADMIN_URL = "X-Proofpoint-Essentials-Admin-Url"
+HEADER_ESSENTIALS_THREAT_KEY = "X-Proofpoint-Essentials-Threat-Key"
+HEADER_ESSENTIALS_THREAT_SECRET = "X-Proofpoint-Essentials-Threat-Secret"
+HEADER_ESSENTIALS_THREAT_URL = "X-Proofpoint-Essentials-Threat-Url"
 # Proofpoint Protection Server (PPS): a second, optional credential set used only by the
 # quarantine tools (PRD-21254). Absent -> those tools return not_configured; every other tool
-# and tools/list itself are unaffected.
+# and tools/list itself are unaffected. Unlike the Essentials sets below, PPS does not join
+# the "at least one of these" gate -- it was designed as purely additive on top of TAP, and
+# generalizing it into the gate would be new scope PRD-21254 never asked for.
 HEADER_PPS_BASE_URL = "X-Proofpoint-Pps-Base-Url"
 HEADER_PPS_USERNAME = "X-Proofpoint-Pps-Username"
 HEADER_PPS_PASSWORD = "X-Proofpoint-Pps-Password"
-REQUIRED_HEADERS = [HEADER_PRINCIPAL, HEADER_SECRET]
+
+# Each pair is a complete credential set on its own; the gateway requires at least one of the
+# three to be fully present (both headers of a pair), not any specific one of them. PPS is
+# intentionally not here (see comment above).
+CREDENTIAL_SETS: list[tuple[str, str]] = [
+    (HEADER_PRINCIPAL, HEADER_SECRET),
+    (HEADER_ESSENTIALS_USER, HEADER_ESSENTIALS_PASSWORD),
+    (HEADER_ESSENTIALS_THREAT_KEY, HEADER_ESSENTIALS_THREAT_SECRET),
+]
+REQUIRED_HEADERS = [header for pair in CREDENTIAL_SETS for header in pair]
 OPTIONAL_HEADERS = [
     HEADER_CLUSTER_URL,
     HEADER_REPORTS_KEY,
     HEADER_REPORTS_SECRET,
+    HEADER_ESSENTIALS_ADMIN_URL,
+    HEADER_ESSENTIALS_THREAT_URL,
     HEADER_PPS_BASE_URL,
     HEADER_PPS_USERNAME,
     HEADER_PPS_PASSWORD,
@@ -83,6 +111,12 @@ INSTRUCTIONS = (
     "- quarantine_* need separate Proofpoint Protection Server credentials; without "
     "them they return not_configured. Policy, DLP and message-pull tools are not "
     "part of any Proofpoint API and return an error explaining that.\n"
+    "- essentials_admin_* tools (Essentials Organization Admin credentials) read a "
+    "different product, Proofpoint Essentials: domain and user inventory for one "
+    "org. essentials_threat_* tools (a separate Essentials Threat Integration "
+    "Key/Secret) read Essentials' own SIEM-shaped threat/click/message events, "
+    "same window rules as tap_*. Essentials, TAP and PPS are independent credential "
+    "sets: sending one never requires or affects the others.\n"
     "Quotas are tight (People and Campaign: 50 calls per 24h); avoid repeating calls."
 )
 
@@ -102,21 +136,43 @@ def _clean(value: str | None) -> str | None:
     return text
 
 
-def normalize_base_url(value: str | None) -> str:
-    """The TAP base URL: https on a proofpoint.com host, no path or query."""
+def normalize_base_url(
+    value: str | None,
+    default: str = DEFAULT_TAP_URL,
+    suffix: str = ALLOWED_HOST_SUFFIX,
+    header_name: str = HEADER_CLUSTER_URL,
+) -> str:
+    """A base URL: https on a host under ``suffix``, no query, and no path beyond ``default``'s own
+    (empty for TAP; ``/api/v1`` for the Essentials Admin API, whose base legitimately has one).
+
+    Generalized (PRD-21255) so the Essentials Admin and Essentials Threat base-url headers reuse
+    this instead of a copy-pasted validator; the TAP cluster URL keeps calling it with just
+    ``value`` since its defaults are this function's defaults.
+    """
     if not value:
-        return DEFAULT_TAP_URL
+        return default
     text = value.strip().rstrip("/")
     if "://" not in text:
         text = "https://" + text
     parts = urlsplit(text)
     host = (parts.hostname or "").lower()
-    if parts.scheme != "https" or not (host == ALLOWED_HOST_SUFFIX[1:] or host.endswith(ALLOWED_HOST_SUFFIX)):
-        raise ValueError(f"{HEADER_CLUSTER_URL} must be an https URL on a proofpoint.com host")
-    if parts.username or parts.password or parts.query or parts.fragment or parts.path not in ("", "/"):
-        raise ValueError(f"{HEADER_CLUSTER_URL} must be a bare host URL such as {DEFAULT_TAP_URL}")
+    if parts.scheme != "https" or not (host == suffix[1:] or host.endswith(suffix)):
+        raise ValueError(f"{header_name} must be an https URL on a {suffix[1:]} host")
+    default_path = urlsplit(default).path.rstrip("/")
+    if parts.username or parts.password or parts.query or parts.fragment or parts.path not in ("", "/", default_path):
+        raise ValueError(f"{header_name} must be a bare host URL such as {default}")
     port = f":{parts.port}" if parts.port else ""
-    return f"https://{host}{port}"
+    return f"https://{host}{port}{default_path}"
+
+
+# (header, default base url, allowed host suffix) for every base-url header this gateway
+# validates the same way. A malformed one does not block the request (tools/list must still
+# work); the first error found is reported by every tool call instead (see header_error).
+_URL_HEADERS: list[tuple[str, str, str]] = [
+    (HEADER_CLUSTER_URL, DEFAULT_TAP_URL, ALLOWED_HOST_SUFFIX),
+    (HEADER_ESSENTIALS_ADMIN_URL, DEFAULT_ESSENTIALS_ADMIN_URL, ALLOWED_ESSENTIALS_ADMIN_SUFFIX),
+    (HEADER_ESSENTIALS_THREAT_URL, DEFAULT_ESSENTIALS_THREAT_URL, ALLOWED_ESSENTIALS_THREAT_SUFFIX),
+]
 
 
 def normalize_pps_base_url(value: str | None) -> str | None:
@@ -143,9 +199,14 @@ def normalize_pps_base_url(value: str | None) -> str | None:
 
 
 class GatewayCredentialsMiddleware:
-    """Reads the Proofpoint headers on /mcp requests; 401 when a required one is missing.
+    """Reads the Proofpoint headers on /mcp requests; 401 when no credential set is present.
 
-    A malformed cluster URL does not block the request (tools/list must work with any
+    Three credential sets are recognised -- TAP, Essentials Admin, Essentials Threat (PRD-21255)
+    -- and each is independently sufficient: at least one must be fully present (both headers of
+    its pair), but a caller never needs more than one. A caller already sending only TAP headers
+    sees no change here (TAP is one of the three sets, same as before this ticket).
+
+    A malformed base-url header does not block the request (tools/list must work with any
     values); tools report it instead and never send credentials to any host.
     """
 
@@ -159,26 +220,37 @@ class GatewayCredentialsMiddleware:
 
         request = Request(scope)
         values = {name: _clean(request.headers.get(name)) for name in REQUIRED_HEADERS + OPTIONAL_HEADERS}
-        missing = [name for name in REQUIRED_HEADERS if not values[name]]
-        if missing:
+        satisfied = any(values[a] and values[b] for a, b in CREDENTIAL_SETS)
+        if not satisfied:
             await JSONResponse(
                 {
                     "error": "Missing credentials",
-                    "message": f"Missing header(s): {', '.join(missing)}",
-                    "required_headers": REQUIRED_HEADERS,
+                    "message": (
+                        "At least one full credential set is required: TAP service principal/secret "
+                        f"({HEADER_PRINCIPAL} + {HEADER_SECRET}), Proofpoint Essentials Admin "
+                        f"username/password ({HEADER_ESSENTIALS_USER} + {HEADER_ESSENTIALS_PASSWORD}), "
+                        f"or Proofpoint Essentials Threat API Integration Key/Secret "
+                        f"({HEADER_ESSENTIALS_THREAT_KEY} + {HEADER_ESSENTIALS_THREAT_SECRET})."
+                    ),
+                    "credential_sets": [list(pair) for pair in CREDENTIAL_SETS],
                     "optional_headers": OPTIONAL_HEADERS,
                 },
                 status_code=401,
             )(scope, receive, send)
             return
+
         header_error = None
-        try:
-            base_url = normalize_base_url(values[HEADER_CLUSTER_URL])
-        except ValueError as e:
-            header_error = str(e)
-            # Never the caller's value: the client is built on the default TAP
-            # host, and tools return header_error before any request.
-            base_url = DEFAULT_TAP_URL
+        resolved: dict[str, str] = {}
+        for header_name, default, suffix in _URL_HEADERS:
+            try:
+                resolved[header_name] = normalize_base_url(values[header_name], default, suffix, header_name)
+            except ValueError as e:
+                # Never the caller's value: the client is built on the default host, and tools
+                # return header_error before any request. First error found wins; it is rare
+                # for a caller to send two malformed base urls at once.
+                if header_error is None:
+                    header_error = str(e)
+                resolved[header_name] = default
 
         pps_header_error = None
         try:
@@ -193,9 +265,15 @@ class GatewayCredentialsMiddleware:
         credentials = ProofpointCredentials(
             principal=values[HEADER_PRINCIPAL] or "",
             secret=values[HEADER_SECRET] or "",
-            base_url=base_url,
+            base_url=resolved[HEADER_CLUSTER_URL],
             reports_key=values[HEADER_REPORTS_KEY],
             reports_secret=values[HEADER_REPORTS_SECRET],
+            essentials_user=values[HEADER_ESSENTIALS_USER],
+            essentials_password=values[HEADER_ESSENTIALS_PASSWORD],
+            essentials_admin_url=resolved[HEADER_ESSENTIALS_ADMIN_URL],
+            essentials_threat_key=values[HEADER_ESSENTIALS_THREAT_KEY],
+            essentials_threat_secret=values[HEADER_ESSENTIALS_THREAT_SECRET],
+            essentials_threat_url=resolved[HEADER_ESSENTIALS_THREAT_URL],
             pps_base_url=pps_base_url,
             pps_username=values[HEADER_PPS_USERNAME],
             pps_password=values[HEADER_PPS_PASSWORD],
@@ -225,9 +303,24 @@ def create_mcp_server(settings: Settings | None = None) -> FastMCP:
 
     client_factory: Callable[[], ProofpointClient | None] = get_client_from_context
 
-    from .tools import navigation, people, quarantine, reports, search, tap, threats, unsupported, urls
+    from .tools import (
+        essentials_admin,
+        essentials_threat,
+        navigation,
+        people,
+        quarantine,
+        reports,
+        search,
+        tap,
+        threats,
+        unsupported,
+        urls,
+    )
 
-    for module in (navigation, tap, search, threats, people, urls, reports, quarantine, unsupported):
+    for module in (
+        navigation, tap, search, threats, people, urls, reports, quarantine, unsupported,
+        essentials_admin, essentials_threat,
+    ):
         module.register(mcp, client_factory)
 
     return mcp

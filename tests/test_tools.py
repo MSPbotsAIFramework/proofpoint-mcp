@@ -65,6 +65,16 @@ EXPECTED_TOOLS: dict[str, set[str]] = {
     "proofpoint_dlp_list_incidents": set(),
     "proofpoint_dlp_get_incident": {"incident_id"},
     "proofpoint_dlp_list_encrypted": set(),
+    "proofpoint_essentials_list_domains": {"org_domain"},
+    "proofpoint_essentials_get_domain": {"org_domain", "domain"},
+    "proofpoint_essentials_list_users": {"org_domain"},
+    "proofpoint_essentials_get_user": {"org_domain", "email"},
+    "proofpoint_essentials_threat_get_messages_blocked": set(),
+    "proofpoint_essentials_threat_get_messages_delivered": set(),
+    "proofpoint_essentials_threat_get_clicks_blocked": set(),
+    "proofpoint_essentials_threat_get_clicks_permitted": set(),
+    "proofpoint_essentials_threat_get_issues": set(),
+    "proofpoint_essentials_threat_get_all": set(),
 }
 
 QUARANTINE = ["proofpoint_quarantine_list", "proofpoint_quarantine_search", "proofpoint_quarantine_release",

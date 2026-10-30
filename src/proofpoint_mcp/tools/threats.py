@@ -16,7 +16,6 @@
 import asyncio
 from datetime import timedelta
 from typing import Annotated, Any, Literal
-from urllib.parse import quote
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
@@ -30,6 +29,7 @@ from ._common import (
     iso,
     now,
     parse_time,
+    path_segment,
     run_tool,
     siem_window,
 )
@@ -53,13 +53,6 @@ IOC_FIELDS: dict[str, tuple[str, ...]] = {
     "mutex": ("name",),
     "process": ("path",),
 }
-
-
-def _segment(value: str, name: str) -> str:
-    text = value.strip()
-    if not text:
-        raise ValueError(f"{name} must not be blank.")
-    return quote(text, safe="")
 
 
 def extract_iocs(forensics: Any, malicious_only: bool = True) -> list[dict]:
@@ -143,7 +136,7 @@ def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
         """
 
         async def action(client: ProofpointClient) -> Any:
-            return await client.tap("GET", f"/v2/campaign/{_segment(campaign_id, 'campaign_id')}")
+            return await client.tap("GET", f"/v2/campaign/{path_segment(campaign_id, 'campaign_id')}")
 
         return await run_tool("proofpoint_threat_get_campaign", client_factory, action)
 
@@ -152,7 +145,7 @@ def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
         """Threat summary: type, classification, severity, status, first seen and related campaign."""
 
         async def action(client: ProofpointClient) -> Any:
-            return await client.tap("GET", f"/v2/threat/summary/{_segment(threat_id, 'threat_id')}")
+            return await client.tap("GET", f"/v2/threat/summary/{path_segment(threat_id, 'threat_id')}")
 
         return await run_tool("proofpoint_threat_get_by_id", client_factory, action)
 
@@ -181,7 +174,7 @@ def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
             async def detail(campaign: dict) -> dict | None:
                 async with semaphore:
                     try:
-                        return await client.tap("GET", f"/v2/campaign/{quote(str(campaign['id']), safe='')}")
+                        return await client.tap("GET", f"/v2/campaign/{path_segment(str(campaign['id']), 'id')}")
                     except ProofpointError as e:
                         if e.status_code in (401, 429):
                             raise

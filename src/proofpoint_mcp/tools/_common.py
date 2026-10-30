@@ -18,6 +18,7 @@ import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal
+from urllib.parse import quote
 
 from mcp.types import ToolAnnotations
 from pydantic import Field
@@ -38,6 +39,20 @@ NOT_CONFIGURED = error_envelope(
     "not_configured",
     "Proofpoint credentials are missing for this request (X-Proofpoint-Service-Principal, "
     "X-Proofpoint-Service-Secret).",
+    False,
+)
+# PRD-21255: Essentials is a credential set independent of TAP. A caller sending only TAP
+# headers gets this (not a 401 -- the gateway already accepted the request on the TAP set).
+NOT_CONFIGURED_ESSENTIALS_ADMIN = error_envelope(
+    "not_configured",
+    "Proofpoint Essentials Admin credentials are missing for this request "
+    "(X-Proofpoint-Essentials-User, X-Proofpoint-Essentials-Password).",
+    False,
+)
+NOT_CONFIGURED_ESSENTIALS_THREAT = error_envelope(
+    "not_configured",
+    "Proofpoint Essentials Threat API credentials are missing for this request "
+    "(X-Proofpoint-Essentials-Threat-Key, X-Proofpoint-Essentials-Threat-Secret).",
     False,
 )
 
@@ -124,6 +139,15 @@ def compact(values: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in values.items() if v is not None}
 
 
+def path_segment(value: str, name: str) -> str:
+    """A non-blank, URL-encoded path segment (moved here from tools/threats.py so
+    tools/essentials_admin.py can reuse it instead of a second copy)."""
+    text = value.strip()
+    if not text:
+        raise ValueError(f"{name} must not be blank.")
+    return quote(text, safe="")
+
+
 def parse_time(value: str, name: str) -> datetime:
     text = value.strip()
     if text.endswith("Z"):
@@ -191,6 +215,15 @@ def dates_window(startDate: str | None, endDate: str | None) -> list[tuple[str, 
     return [("interval", f"{iso(start)}/{iso(end)}")]
 
 
+# (client, path, params) -> response. Lets a SIEM-shaped endpoint be fetched over a credential
+# set other than TAP (e.g. Essentials Threat, PRD-21255) without fetch_siem knowing which.
+SiemCaller = Callable[["ProofpointClient", str, list[tuple[str, Any]]], Awaitable[Any]]
+
+
+async def _tap_siem_call(client: ProofpointClient, path: str, params: list[tuple[str, Any]]) -> Any:
+    return await client.tap("GET", path, params)
+
+
 async def fetch_siem(
     client: ProofpointClient,
     endpoint: str,
@@ -198,13 +231,15 @@ async def fetch_siem(
     threatStatus: str | None = None,
     threatType: str | None = None,
     fmt: str = "json",
+    caller: SiemCaller | None = None,
 ) -> Any:
     params = [("format", fmt), *window]
     if threatStatus:
         params.append(("threatStatus", threatStatus))
     if threatType:
         params.append(("threatType", threatType))
-    return await client.tap("GET", f"/v2/siem/{endpoint}", params)
+    call = caller or _tap_siem_call
+    return await call(client, f"/v2/siem/{endpoint}", params)
 
 
 def siem_lists(payload: Any) -> dict[str, list[dict]]:
@@ -235,16 +270,24 @@ async def run_tool(
     name: str,
     client_factory: ClientFactory,
     action: Callable[[ProofpointClient], Awaitable[Any]],
+    *,
+    requires: Callable[[ProofpointClient], bool] | None = None,
+    not_configured: str | None = None,
 ) -> str:
     """Resolve the caller's client, run ``action``, and always return a string.
 
-    Errors never escape as exceptions: they become the standard error envelope.
+    Errors never escape as exceptions: they become the standard error envelope. ``requires``
+    checks a credential set that is independent of TAP (e.g. Essentials); when it fails, the
+    tool returns ``not_configured`` without calling ``action`` -- the gateway already let the
+    request through on a different credential set, so this is not a 401.
     """
     client = client_factory()
     if client is None:
         return NOT_CONFIGURED
     if client.header_error:
         return error_envelope("invalid_argument", client.header_error, False)
+    if requires is not None and not requires(client):
+        return not_configured or NOT_CONFIGURED
     started = time.monotonic()
     try:
         result = await action(client)

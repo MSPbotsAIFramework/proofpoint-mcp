@@ -25,6 +25,15 @@ REPORTS_TOKEN_URL = "https://auth.proofpoint.com/v1/token"
 # A caller-supplied base URL must stay on Proofpoint's own domain.
 ALLOWED_HOST_SUFFIX = ".proofpoint.com"
 
+# Proofpoint Essentials is a different product from TAP: different base URL,
+# different credentials, different API shape (PRD-21255).
+# Admin/Reporting API: regional stacks (us1-us5, eu1), same path on every stack.
+DEFAULT_ESSENTIALS_ADMIN_URL = "https://us1.proofpointessentials.com/api/v1"
+ALLOWED_ESSENTIALS_ADMIN_SUFFIX = ".proofpointessentials.com"
+# Essentials Threat API: separate host family from both TAP and the Admin API.
+DEFAULT_ESSENTIALS_THREAT_URL = "https://us-siem.proofpointessentials.com"
+ALLOWED_ESSENTIALS_THREAT_SUFFIX = ".proofpointessentials.com"
+
 
 class Settings(BaseSettings):
     # extra="ignore": the runtime injects variables this project does not declare.

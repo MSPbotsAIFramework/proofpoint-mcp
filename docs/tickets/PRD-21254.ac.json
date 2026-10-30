@@ -1,114 +1,154 @@
 [
-  {
-    "id": "TC-PPQ-001",
-    "ac": "AC1",
-    "type": "auto",
-    "text": "Given PPS credentials are present, when proofpoint_quarantine_list is called with a folder filter, then it returns the real quarantined messages in that folder instead of the old Not available error.",
-    "tests": ["tests/test_quarantine_tools.py::test_list_returns_real_messages_with_pps_credentials"]
-  },
-  {
-    "id": "TC-PPQ-002",
-    "ac": "AC1",
-    "type": "auto",
-    "text": "Given PPS credentials, when proofpoint_quarantine_list is called on a folder with no quarantined messages, then it returns an empty list, not an error.",
-    "tests": ["tests/test_quarantine_tools.py::test_list_empty_folder_returns_empty_list"]
-  },
-  {
-    "id": "TC-PPQ-003",
-    "ac": "AC2",
-    "type": "auto",
-    "text": "Given PPS credentials, when proofpoint_quarantine_search is called with a query matching a quarantined message's subject, then that message is returned.",
-    "tests": ["tests/test_quarantine_tools.py::test_search_matches_quarantined_message_by_subject"]
-  },
-  {
-    "id": "TC-PPQ-004",
-    "ac": "AC2",
-    "type": "auto",
-    "text": "Given PPS credentials, when proofpoint_quarantine_search is called with a query matching nothing, then it returns an empty list, not an error.",
-    "tests": ["tests/test_quarantine_tools.py::test_search_no_match_returns_empty_list"]
-  },
-  {
-    "id": "TC-PPQ-005",
-    "ac": "AC3",
-    "type": "manual",
-    "text": "Given PPS credentials and a valid quarantined message id on a real PPS tenant, when proofpoint_quarantine_release is called, then the message is released (confirmation returned) and a following list/search of that folder no longer shows it.",
-    "steps": [
-      "On a test tenant with a real Proofpoint Protection Server, quarantine a test message (or pick an existing quarantined one).",
-      "Call proofpoint_quarantine_list to confirm the message is in the quarantine folder and note its message_id.",
-      "Call proofpoint_quarantine_release with that message_id.",
-      "Call proofpoint_quarantine_list again for the same folder."
-    ],
-    "expect": "The release call returns a confirmation (no error envelope). The second list call no longer includes that message_id in the folder.",
-    "result": "blocked",
-    "evidence": ""
-  },
-  {
-    "id": "TC-PPQ-006",
-    "ac": "AC7",
-    "type": "auto",
-    "text": "Given PPS credentials, when proofpoint_quarantine_release or proofpoint_quarantine_delete is called with a message id that does not exist in quarantine, then it returns a not_found error for both tools.",
-    "tests": [
-      "tests/test_quarantine_tools.py::test_release_unknown_message_id_returns_not_found",
-      "tests/test_quarantine_tools.py::test_delete_unknown_message_id_returns_not_found"
-    ]
-  },
-  {
-    "id": "TC-PPQ-007",
-    "ac": "AC4",
-    "type": "manual",
-    "text": "Given PPS credentials and a valid quarantined message id on a real PPS tenant, when proofpoint_quarantine_delete is called, then the message is permanently removed (confirmation returned).",
-    "steps": [
-      "On a test tenant with a real Proofpoint Protection Server, quarantine a disposable test message and note its message_id.",
-      "Call proofpoint_quarantine_delete with that message_id.",
-      "Call proofpoint_quarantine_list / _search for that message_id."
-    ],
-    "expect": "The delete call returns a confirmation (no error envelope). The message is gone from quarantine entirely (not just from one folder view).",
-    "result": "blocked",
-    "evidence": ""
-  },
-  {
-    "id": "TC-PPQ-008",
-    "ac": "AC5",
-    "type": "auto",
-    "text": "Given a request carries only TAP credentials (no PPS headers), when any of the 4 quarantine tools is called, then it returns a not_configured error naming the missing PPS headers, never the old Not available message and never a gateway 401.",
-    "tests": ["tests/test_quarantine_tools.py::test_quarantine_tools_return_not_configured_without_pps_headers"]
-  },
-  {
-    "id": "TC-PPQ-009",
-    "ac": "AC6",
-    "type": "auto",
-    "text": "Given PPS headers are present but rejected by PPS (mocked 401), when a quarantine tool is called, then it returns an unauthorized error, not a 500 and not a silently empty result.",
-    "tests": ["tests/test_quarantine_tools.py::test_quarantine_list_with_wrong_pps_credentials_returns_unauthorized"]
-  },
-  {
-    "id": "TC-PPQ-010",
-    "ac": "AC8",
-    "type": "auto",
-    "text": "Given two different callers send different PPS credentials on two separate requests, when each calls proofpoint_quarantine_list, then each only sees its own tenant's data and no state is shared across requests.",
-    "tests": ["tests/test_quarantine_tools.py::test_pps_client_isolated_per_request_credentials"]
-  },
-  {
-    "id": "TC-PPQ-011",
-    "ac": "AC9",
-    "type": "auto",
-    "text": "Given this ticket only adds quarantine support, when any proofpoint_policy_* tool is called, then it still returns today's exact Not available error, unchanged (regression guard).",
-    "tests": ["tests/test_tools.py::test_unsupported_tools_explain_and_need_no_credentials"]
-  },
-  {
-    "id": "TC-PPQ-012",
-    "ac": "AC10",
-    "type": "auto",
-    "text": "Given existing tenant connections already call the 4 quarantine tool names with today's parameter sets, when tools/list is read after this change, then the tool names and required parameters for all 4 quarantine tools are unchanged (regression guard for the declared public contract).",
-    "tests": [
-      "tests/test_tools.py::test_all_tools_listed",
-      "tests/test_tools.py::test_required_params"
-    ]
-  },
-  {
-    "id": "TC-PPQ-013",
-    "ac": "AC11",
-    "type": "auto",
-    "text": "Given proofpoint_status already reports reports_credentials_sent, when proofpoint_status is called after this change, then it also reports pps_credentials_sent: true when PPS headers are sent and false when they are not.",
-    "tests": ["tests/test_api_client.py::test_status_reports_pps_credentials_sent"]
-  }
+    {
+        "id": "TC-PPQ-001",
+        "ac": "AC1",
+        "type": "auto",
+        "text": "Given PPS credentials are present, when proofpoint_quarantine_list is called with a folder filter, then it returns the real quarantined messages in that folder instead of the old Not available error.",
+        "tests": [
+            "tests/test_quarantine_tools.py::test_list_returns_real_messages_with_pps_credentials"
+        ],
+        "result": "pass",
+        "evidence": "$ uv run pytest -q tests/test_quarantine_tools.py::test_list_returns_real_messages_with_pps_credentials\\n-> all passed (see docs/tickets/PRD-21254.md Self-test for the full-suite run: 378 passed, 4 skipped, commit 73ceea2)"
+    },
+    {
+        "id": "TC-PPQ-002",
+        "ac": "AC1",
+        "type": "auto",
+        "text": "Given PPS credentials, when proofpoint_quarantine_list is called on a folder with no quarantined messages, then it returns an empty list, not an error.",
+        "tests": [
+            "tests/test_quarantine_tools.py::test_list_empty_folder_returns_empty_list"
+        ],
+        "result": "pass",
+        "evidence": "$ uv run pytest -q tests/test_quarantine_tools.py::test_list_empty_folder_returns_empty_list\\n-> all passed (see docs/tickets/PRD-21254.md Self-test for the full-suite run: 378 passed, 4 skipped, commit 73ceea2)"
+    },
+    {
+        "id": "TC-PPQ-003",
+        "ac": "AC2",
+        "type": "auto",
+        "text": "Given PPS credentials, when proofpoint_quarantine_search is called with a query matching a quarantined message's subject, then that message is returned.",
+        "tests": [
+            "tests/test_quarantine_tools.py::test_search_matches_quarantined_message_by_subject"
+        ],
+        "result": "pass",
+        "evidence": "$ uv run pytest -q tests/test_quarantine_tools.py::test_search_matches_quarantined_message_by_subject\\n-> all passed (see docs/tickets/PRD-21254.md Self-test for the full-suite run: 378 passed, 4 skipped, commit 73ceea2)"
+    },
+    {
+        "id": "TC-PPQ-004",
+        "ac": "AC2",
+        "type": "auto",
+        "text": "Given PPS credentials, when proofpoint_quarantine_search is called with a query matching nothing, then it returns an empty list, not an error.",
+        "tests": [
+            "tests/test_quarantine_tools.py::test_search_no_match_returns_empty_list"
+        ],
+        "result": "pass",
+        "evidence": "$ uv run pytest -q tests/test_quarantine_tools.py::test_search_no_match_returns_empty_list\\n-> all passed (see docs/tickets/PRD-21254.md Self-test for the full-suite run: 378 passed, 4 skipped, commit 73ceea2)"
+    },
+    {
+        "id": "TC-PPQ-005",
+        "ac": "AC3",
+        "type": "manual",
+        "text": "Given PPS credentials and a valid quarantined message id on a real PPS tenant, when proofpoint_quarantine_release is called, then the message is released (confirmation returned) and a following list/search of that folder no longer shows it.",
+        "steps": [
+            "On a test tenant with a real Proofpoint Protection Server, quarantine a test message (or pick an existing quarantined one).",
+            "Call proofpoint_quarantine_list to confirm the message is in the quarantine folder and note its message_id.",
+            "Call proofpoint_quarantine_release with that message_id.",
+            "Call proofpoint_quarantine_list again for the same folder."
+        ],
+        "expect": "The release call returns a confirmation (no error envelope). The second list call no longer includes that message_id in the folder.",
+        "result": "blocked",
+        "evidence": ""
+    },
+    {
+        "id": "TC-PPQ-006",
+        "ac": "AC7",
+        "type": "auto",
+        "text": "Given PPS credentials, when proofpoint_quarantine_release or proofpoint_quarantine_delete is called with a message id that does not exist in quarantine, then it returns a not_found error for both tools.",
+        "tests": [
+            "tests/test_quarantine_tools.py::test_release_unknown_message_id_returns_not_found",
+            "tests/test_quarantine_tools.py::test_delete_unknown_message_id_returns_not_found"
+        ],
+        "result": "pass",
+        "evidence": "$ uv run pytest -q tests/test_quarantine_tools.py::test_release_unknown_message_id_returns_not_found tests/test_quarantine_tools.py::test_delete_unknown_message_id_returns_not_found\\n-> all passed (see docs/tickets/PRD-21254.md Self-test for the full-suite run: 378 passed, 4 skipped, commit 73ceea2)"
+    },
+    {
+        "id": "TC-PPQ-007",
+        "ac": "AC4",
+        "type": "manual",
+        "text": "Given PPS credentials and a valid quarantined message id on a real PPS tenant, when proofpoint_quarantine_delete is called, then the message is permanently removed (confirmation returned).",
+        "steps": [
+            "On a test tenant with a real Proofpoint Protection Server, quarantine a disposable test message and note its message_id.",
+            "Call proofpoint_quarantine_delete with that message_id.",
+            "Call proofpoint_quarantine_list / _search for that message_id."
+        ],
+        "expect": "The delete call returns a confirmation (no error envelope). The message is gone from quarantine entirely (not just from one folder view).",
+        "result": "blocked",
+        "evidence": ""
+    },
+    {
+        "id": "TC-PPQ-008",
+        "ac": "AC5",
+        "type": "auto",
+        "text": "Given a request carries only TAP credentials (no PPS headers), when any of the 4 quarantine tools is called, then it returns a not_configured error naming the missing PPS headers, never the old Not available message and never a gateway 401.",
+        "tests": [
+            "tests/test_quarantine_tools.py::test_quarantine_tools_return_not_configured_without_pps_headers"
+        ],
+        "result": "pass",
+        "evidence": "$ uv run pytest -q tests/test_quarantine_tools.py::test_quarantine_tools_return_not_configured_without_pps_headers\\n-> all passed (see docs/tickets/PRD-21254.md Self-test for the full-suite run: 378 passed, 4 skipped, commit 73ceea2)"
+    },
+    {
+        "id": "TC-PPQ-009",
+        "ac": "AC6",
+        "type": "auto",
+        "text": "Given PPS headers are present but rejected by PPS (mocked 401), when a quarantine tool is called, then it returns an unauthorized error, not a 500 and not a silently empty result.",
+        "tests": [
+            "tests/test_quarantine_tools.py::test_quarantine_list_with_wrong_pps_credentials_returns_unauthorized"
+        ],
+        "result": "pass",
+        "evidence": "$ uv run pytest -q tests/test_quarantine_tools.py::test_quarantine_list_with_wrong_pps_credentials_returns_unauthorized\\n-> all passed (see docs/tickets/PRD-21254.md Self-test for the full-suite run: 378 passed, 4 skipped, commit 73ceea2)"
+    },
+    {
+        "id": "TC-PPQ-010",
+        "ac": "AC8",
+        "type": "auto",
+        "text": "Given two different callers send different PPS credentials on two separate requests, when each calls proofpoint_quarantine_list, then each only sees its own tenant's data and no state is shared across requests.",
+        "tests": [
+            "tests/test_quarantine_tools.py::test_list_isolates_pps_credentials_between_requests"
+        ],
+        "result": "pass",
+        "evidence": "$ uv run pytest -q tests/test_quarantine_tools.py::test_list_isolates_pps_credentials_between_requests\\n-> all passed (see docs/tickets/PRD-21254.md Self-test for the full-suite run: 378 passed, 4 skipped, commit 73ceea2)"
+    },
+    {
+        "id": "TC-PPQ-011",
+        "ac": "AC9",
+        "type": "auto",
+        "text": "Given this ticket only adds quarantine support, when any proofpoint_policy_* tool is called, then it still returns today's exact Not available error, unchanged (regression guard).",
+        "tests": [
+            "tests/test_tools.py::test_unsupported_tools_explain_and_need_no_credentials"
+        ],
+        "result": "pass",
+        "evidence": "$ uv run pytest -q tests/test_tools.py::test_unsupported_tools_explain_and_need_no_credentials\\n-> all passed (see docs/tickets/PRD-21254.md Self-test for the full-suite run: 378 passed, 4 skipped, commit 73ceea2)"
+    },
+    {
+        "id": "TC-PPQ-012",
+        "ac": "AC10",
+        "type": "auto",
+        "text": "Given existing tenant connections already call the 4 quarantine tool names with today's parameter sets, when tools/list is read after this change, then the tool names and required parameters for all 4 quarantine tools are unchanged (regression guard for the declared public contract).",
+        "tests": [
+            "tests/test_tools.py::test_all_tools_listed",
+            "tests/test_tools.py::test_required_params"
+        ],
+        "result": "pass",
+        "evidence": "$ uv run pytest -q tests/test_tools.py::test_all_tools_listed tests/test_tools.py::test_required_params\\n-> all passed (see docs/tickets/PRD-21254.md Self-test for the full-suite run: 378 passed, 4 skipped, commit 73ceea2)"
+    },
+    {
+        "id": "TC-PPQ-013",
+        "ac": "AC11",
+        "type": "auto",
+        "text": "Given proofpoint_status already reports reports_credentials_sent, when proofpoint_status is called after this change, then it also reports pps_credentials_sent: true when PPS headers are sent and false when they are not.",
+        "tests": [
+            "tests/test_api_client.py::test_status_probe_reports_pps_credentials_sent"
+        ],
+        "result": "pass",
+        "evidence": "$ uv run pytest -q tests/test_api_client.py::test_status_probe_reports_pps_credentials_sent\\n-> all passed (see docs/tickets/PRD-21254.md Self-test for the full-suite run: 378 passed, 4 skipped, commit 73ceea2)"
+    }
 ]

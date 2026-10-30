@@ -81,7 +81,7 @@ DOMAINS: dict[str, tuple[str, list[str]]] = {
         ],
     ),
     "quarantine": (
-        "Unavailable: quarantine is not exposed by the TAP API.",
+        "Needs separate Proofpoint Protection Server (PPS) credentials; TAP alone cannot reach it.",
         [
             "proofpoint_quarantine_list",
             "proofpoint_quarantine_search",
@@ -161,8 +161,8 @@ def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
         """Check the credentials: TAP and (with org_domain) Essentials Admin authorization, and which
         optional sets were sent.
 
-        TAP, Essentials Admin and Essentials Threat (PRD-21255) are independent credential sets;
-        this reports each one that was sent, without requiring the others.
+        TAP, Essentials Admin, Essentials Threat (PRD-21255) and PPS (PRD-21254) are independent
+        credential sets; this reports each one that was sent, without requiring the others.
         """
 
         async def action(client: ProofpointClient) -> dict:
@@ -182,6 +182,7 @@ def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
                 "reports_credentials_sent": client.has_reports_credentials,
                 "essentials_admin_credentials_sent": client.has_essentials_admin_credentials,
                 "essentials_threat_credentials_sent": client.has_essentials_threat_credentials,
+                "pps_credentials_sent": client.has_pps_credentials,
                 "domains": {name: summary for name, (summary, _tools) in DOMAINS.items()},
             }
             if client.has_essentials_admin_credentials:

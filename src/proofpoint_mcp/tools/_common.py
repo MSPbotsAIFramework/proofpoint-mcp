@@ -56,6 +56,21 @@ NOT_CONFIGURED_ESSENTIALS_THREAT = error_envelope(
     False,
 )
 
+# Quarantine tools need a second, optional credential set (PRD-21254): Proofpoint Protection
+# Server, not TAP. Returned instead of NOT_CONFIGURED so the message names the right headers.
+PPS_NOT_CONFIGURED = error_envelope(
+    "not_configured",
+    "Quarantine tools need Proofpoint Protection Server credentials (X-Proofpoint-Pps-Base-Url, "
+    "X-Proofpoint-Pps-Username, X-Proofpoint-Pps-Password); TAP credentials alone do not reach PPS.",
+    False,
+)
+
+# Shared argument types for the "unavailable stub" tools and the real quarantine tools.
+Page = Annotated[int | None, Field(description="Page number.")]
+PerPage = Annotated[int | None, Field(description="Results per page.")]
+Date = Annotated[str | None, Field(description="ISO8601 date-time (UTC).")]
+Text = Annotated[str | None, Field(description="Filter text.")]
+
 # SIEM API limits (official docs): at most one hour per request, at most
 # seven days into the past, interval at least 30 seconds.
 SIEM_MAX_SECONDS = 3600

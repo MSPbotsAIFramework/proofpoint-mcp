@@ -49,9 +49,18 @@ HEADER_ESSENTIALS_ADMIN_URL = "X-Proofpoint-Essentials-Admin-Url"
 HEADER_ESSENTIALS_THREAT_KEY = "X-Proofpoint-Essentials-Threat-Key"
 HEADER_ESSENTIALS_THREAT_SECRET = "X-Proofpoint-Essentials-Threat-Secret"
 HEADER_ESSENTIALS_THREAT_URL = "X-Proofpoint-Essentials-Threat-Url"
+# Proofpoint Protection Server (PPS): a second, optional credential set used only by the
+# quarantine tools (PRD-21254). Absent -> those tools return not_configured; every other tool
+# and tools/list itself are unaffected. Unlike the Essentials sets below, PPS does not join
+# the "at least one of these" gate -- it was designed as purely additive on top of TAP, and
+# generalizing it into the gate would be new scope PRD-21254 never asked for.
+HEADER_PPS_BASE_URL = "X-Proofpoint-Pps-Base-Url"
+HEADER_PPS_USERNAME = "X-Proofpoint-Pps-Username"
+HEADER_PPS_PASSWORD = "X-Proofpoint-Pps-Password"
 
 # Each pair is a complete credential set on its own; the gateway requires at least one of the
-# three to be fully present (both headers of a pair), not any specific one of them.
+# three to be fully present (both headers of a pair), not any specific one of them. PPS is
+# intentionally not here (see comment above).
 CREDENTIAL_SETS: list[tuple[str, str]] = [
     (HEADER_PRINCIPAL, HEADER_SECRET),
     (HEADER_ESSENTIALS_USER, HEADER_ESSENTIALS_PASSWORD),
@@ -64,6 +73,9 @@ OPTIONAL_HEADERS = [
     HEADER_REPORTS_SECRET,
     HEADER_ESSENTIALS_ADMIN_URL,
     HEADER_ESSENTIALS_THREAT_URL,
+    HEADER_PPS_BASE_URL,
+    HEADER_PPS_USERNAME,
+    HEADER_PPS_PASSWORD,
 ]
 
 _PLACEHOLDER = re.compile(r"^\$\{.*\}$")
@@ -96,14 +108,15 @@ INSTRUCTIONS = (
     "- proofpoint_url_decode turns rewritten urldefense URLs back into the original.\n"
     "- reports_* need a separate Dashboard Reports API key; each report section "
     "allows 20 calls a day.\n"
-    "- Quarantine, policy, DLP and message-pull tools are not part of the TAP API "
-    "and return an error explaining that.\n"
+    "- quarantine_* need separate Proofpoint Protection Server credentials; without "
+    "them they return not_configured. Policy, DLP and message-pull tools are not "
+    "part of any Proofpoint API and return an error explaining that.\n"
     "- essentials_admin_* tools (Essentials Organization Admin credentials) read a "
     "different product, Proofpoint Essentials: domain and user inventory for one "
     "org. essentials_threat_* tools (a separate Essentials Threat Integration "
     "Key/Secret) read Essentials' own SIEM-shaped threat/click/message events, "
-    "same window rules as tap_*. Essentials and TAP are independent credential "
-    "sets: sending one never requires or affects the other.\n"
+    "same window rules as tap_*. Essentials, TAP and PPS are independent credential "
+    "sets: sending one never requires or affects the others.\n"
     "Quotas are tight (People and Campaign: 50 calls per 24h); avoid repeating calls."
 )
 
@@ -162,6 +175,29 @@ _URL_HEADERS: list[tuple[str, str, str]] = [
 ]
 
 
+def normalize_pps_base_url(value: str | None) -> str | None:
+    """The PPS base URL: https, a bare host, no path/query/userinfo.
+
+    Unlike normalize_base_url there is no domain-suffix allowlist: PPS cloud tenants are on
+    *.pphosted.com and on-prem tenants are on an arbitrary customer host, so there is no single
+    Proofpoint domain to pin to (flagged in the technical design under Non-functional /
+    Host validation trade-off). None when the header is absent -- PPS credentials are optional.
+    """
+    if not value:
+        return None
+    text = value.strip().rstrip("/")
+    if "://" not in text:
+        text = "https://" + text
+    parts = urlsplit(text)
+    host = (parts.hostname or "").lower()
+    if parts.scheme != "https" or not host:
+        raise ValueError(f"{HEADER_PPS_BASE_URL} must be an https URL with a host")
+    if parts.username or parts.password or parts.query or parts.fragment or parts.path not in ("", "/"):
+        raise ValueError(f"{HEADER_PPS_BASE_URL} must be a bare host URL such as https://tenant.pphosted.com:10000")
+    port = f":{parts.port}" if parts.port else ""
+    return f"https://{host}{port}"
+
+
 class GatewayCredentialsMiddleware:
     """Reads the Proofpoint headers on /mcp requests; 401 when no credential set is present.
 
@@ -216,6 +252,16 @@ class GatewayCredentialsMiddleware:
                     header_error = str(e)
                 resolved[header_name] = default
 
+        pps_header_error = None
+        try:
+            pps_base_url = normalize_pps_base_url(values[HEADER_PPS_BASE_URL])
+        except ValueError as e:
+            # Kept separate from header_error: unlike the TAP cluster URL, a malformed PPS URL
+            # must not block the TAP/Reports tools (PPS is optional) -- only the quarantine
+            # tools check pps_header_error, so the rest of the connector keeps working.
+            pps_header_error = str(e)
+            pps_base_url = None
+
         credentials = ProofpointCredentials(
             principal=values[HEADER_PRINCIPAL] or "",
             secret=values[HEADER_SECRET] or "",
@@ -228,7 +274,11 @@ class GatewayCredentialsMiddleware:
             essentials_threat_key=values[HEADER_ESSENTIALS_THREAT_KEY],
             essentials_threat_secret=values[HEADER_ESSENTIALS_THREAT_SECRET],
             essentials_threat_url=resolved[HEADER_ESSENTIALS_THREAT_URL],
+            pps_base_url=pps_base_url,
+            pps_username=values[HEADER_PPS_USERNAME],
+            pps_password=values[HEADER_PPS_PASSWORD],
             header_error=header_error,
+            pps_header_error=pps_header_error,
         )
         request_id = (request.headers.get("x-request-id") or "").strip()[:64] or uuid.uuid4().hex[:12]
         creds_token = _credentials_var.set(credentials)
@@ -253,10 +303,23 @@ def create_mcp_server(settings: Settings | None = None) -> FastMCP:
 
     client_factory: Callable[[], ProofpointClient | None] = get_client_from_context
 
-    from .tools import essentials_admin, essentials_threat, navigation, people, reports, search, tap, threats, unsupported, urls
+    from .tools import (
+        essentials_admin,
+        essentials_threat,
+        navigation,
+        people,
+        quarantine,
+        reports,
+        search,
+        tap,
+        threats,
+        unsupported,
+        urls,
+    )
 
     for module in (
-        navigation, tap, search, threats, people, urls, reports, unsupported, essentials_admin, essentials_threat,
+        navigation, tap, search, threats, people, urls, reports, quarantine, unsupported,
+        essentials_admin, essentials_threat,
     ):
         module.register(mcp, client_factory)
 

@@ -77,11 +77,10 @@ EXPECTED_TOOLS: dict[str, set[str]] = {
     "proofpoint_essentials_threat_get_all": set(),
 }
 
+QUARANTINE = ["proofpoint_quarantine_list", "proofpoint_quarantine_search", "proofpoint_quarantine_release",
+              "proofpoint_quarantine_delete"]
+
 UNSUPPORTED = {
-    "proofpoint_quarantine_list": {},
-    "proofpoint_quarantine_search": {"query": "x"},
-    "proofpoint_quarantine_release": {"message_id": "m"},
-    "proofpoint_quarantine_delete": {"message_id": "m"},
     "proofpoint_policy_list": {},
     "proofpoint_policy_get": {"policy_id": "p"},
     "proofpoint_policy_list_routes": {},
@@ -114,13 +113,33 @@ def test_description_budget(tools, name):
     assert len(description.splitlines()[0]) <= 100
 
 
-@pytest.mark.parametrize("name", sorted(EXPECTED_TOOLS))
+@pytest.mark.parametrize("name", sorted(set(EXPECTED_TOOLS) - set(QUARANTINE)))
 def test_every_tool_is_read_only(tools, name):
-    # No tool changes Proofpoint data: the write-style tools are unavailable stubs.
+    # No tool other than the 4 real quarantine tools changes Proofpoint data: every other
+    # write-style tool is an unavailable stub.
     annotations = tools[name].annotations
     assert annotations is not None
     assert annotations.readOnlyHint is True
     assert not annotations.destructiveHint
+
+
+def test_quarantine_list_and_search_are_read_only(tools):
+    for name in ("proofpoint_quarantine_list", "proofpoint_quarantine_search"):
+        annotations = tools[name].annotations
+        assert annotations.readOnlyHint is True
+        assert not annotations.destructiveHint
+
+
+def test_quarantine_release_is_a_write_not_destructive(tools):
+    annotations = tools["proofpoint_quarantine_release"].annotations
+    assert annotations.readOnlyHint is False
+    assert not annotations.destructiveHint
+
+
+def test_quarantine_delete_is_destructive(tools):
+    annotations = tools["proofpoint_quarantine_delete"].annotations
+    assert annotations.readOnlyHint is False
+    assert annotations.destructiveHint is True
 
 
 def test_navigation_covers_every_tool():

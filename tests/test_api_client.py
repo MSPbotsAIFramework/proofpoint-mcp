@@ -138,6 +138,25 @@ async def test_basic_auth_on_cluster_url():
     assert str(request.url) == "https://tap.eu.proofpoint.com/v2/threat/summary/t1"
 
 
+async def test_pps_basic_auth_on_pps_base_url():
+    rec = Recorder({"GET tenant.pphosted.com/rest/v1/quarantine": {"records": []}})
+    creds = ProofpointCredentials(
+        principal="prin", secret="sec", base_url=TAP,
+        pps_base_url="https://tenant.pphosted.com", pps_username="ppsuser", pps_password="ppspass",
+    )
+    assert await _client(rec, creds).pps("GET", "/quarantine") == {"records": []}
+    request = rec.requests[0]
+    assert request.headers["Authorization"] == "Basic " + base64.b64encode(b"ppsuser:ppspass").decode()
+    assert str(request.url) == "https://tenant.pphosted.com/rest/v1/quarantine"
+
+
+async def test_pps_without_credentials_raises():
+    rec = Recorder()
+    with pytest.raises(ValueError, match="Protection Server"):
+        await _client(rec, CREDS).pps("GET", "/quarantine")
+    assert not rec.requests
+
+
 async def test_get_retries_5xx():
     replies = iter([httpx.Response(503), httpx.Response(200, json={"ok": 1})])
     rec = Recorder({"GET tap-api-v2.proofpoint.com/v2/x": lambda r: next(replies)})
@@ -486,9 +505,20 @@ async def test_status_probe(monkeypatch):
     rec = Recorder({f"GET tap-api-v2.proofpoint.com/v2/threat/summary/{'0' * 64}": httpx.Response(404)})
     out = await _call(monkeypatch, rec, "proofpoint_status", {})
     assert out["tap"] == {"authorized": True} and out["reports_credentials_sent"] is False
+    assert out["pps_credentials_sent"] is False
     rec = Recorder({f"GET tap-api-v2.proofpoint.com/v2/threat/summary/{'0' * 64}": httpx.Response(401)})
     out = await _call(monkeypatch, rec, "proofpoint_status", {})
     assert out["tap"]["authorized"] is False
+
+
+async def test_status_probe_reports_pps_credentials_sent(monkeypatch):
+    rec = Recorder({f"GET tap-api-v2.proofpoint.com/v2/threat/summary/{'0' * 64}": httpx.Response(404)})
+    creds = ProofpointCredentials(
+        principal="prin", secret="sec", base_url=TAP,
+        pps_base_url="https://tenant.pphosted.com:10000", pps_username="u", pps_password="p",
+    )
+    out = await _call(monkeypatch, rec, "proofpoint_status", {}, creds)
+    assert out["pps_credentials_sent"] is True
 
 
 async def test_status_reports_essentials_credentials_sent(monkeypatch):

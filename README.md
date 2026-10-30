@@ -8,7 +8,8 @@ messages delivered or blocked, malicious URL clicks), search those messages, dri
 campaigns and sandbox forensics, see the most attacked people and top clickers, decode URL
 Defense links, and, with a separate key, read the Dashboard reports. With its own, independent
 credentials it can also read an Essentials organization's domain and user inventory, and
-Essentials' own SIEM-shaped threat feed.
+Essentials' own SIEM-shaped threat feed. With a third, also independent credential set
+(Proofpoint Protection Server) it can list, search, release and delete quarantined messages.
 
 - Transport: MCP Streamable HTTP at `POST /mcp`, health probe at `GET /health`
 - Stateless and multi-tenant: credentials arrive on every request as HTTP headers and are
@@ -91,11 +92,13 @@ Links: [connect.mspbots.ai](https://connect.mspbots.ai) · [mspbots.ai](https://
 
 ## Authentication headers
 
-Three credential sets are recognised -- **TAP**, **Proofpoint Essentials Admin**, and
-**Proofpoint Essentials Threat** -- and each is independent: a request needs at least one of
-them fully present, but never more than one, and sending one never requires or affects the
-others. A caller that only ever sends TAP headers is completely unaffected by the two Essentials
-sets existing.
+Four credential sets are recognised -- **TAP**, **Proofpoint Essentials Admin**,
+**Proofpoint Essentials Threat**, and **Proofpoint Protection Server (PPS)** -- and each is
+independent: sending one never requires or affects the others. The gateway itself requires at
+least one of the first three (TAP / Essentials Admin / Essentials Threat) to be fully present;
+PPS is purely additive on top of that and only unlocks the 4 quarantine tools (see "A request to
+`/mcp`..." below). A caller that only ever sends TAP headers is completely unaffected by the
+other three sets existing.
 
 | Header | Required | Type | Default | Allowed values | Description | Example |
 |---|---|---|---|---|---|---|
@@ -110,6 +113,9 @@ sets existing.
 | `X-Proofpoint-Essentials-Threat-Key` | with `-Secret` | string | none | - | Essentials Threat API Integration Key | `your-threat-key` |
 | `X-Proofpoint-Essentials-Threat-Secret` | with `-Key` | string | none | - | Essentials Threat API Integration Secret | `your-threat-secret` |
 | `X-Proofpoint-Essentials-Threat-Url` | No | string | `https://us-siem.proofpointessentials.com` | https URL on a `proofpointessentials.com` host | Essentials Threat API host | `https://eu-siem.proofpointessentials.com` |
+| `X-Proofpoint-Pps-Base-Url` | No | string | none | https URL, bare host | Proofpoint Protection Server (PPS) REST API base URL; required to use the quarantine tools | `https://tenant.pphosted.com:10000` |
+| `X-Proofpoint-Pps-Username` | No | string | none | - | PPS API-role account username; required to use the quarantine tools | `your-pps-username` |
+| `X-Proofpoint-Pps-Password` | No | string | none | - | PPS API-role account password; required to use the quarantine tools | `your-pps-password` |
 
 Where to get them:
 
@@ -122,6 +128,10 @@ Where to get them:
   password for the organization to read.
 - **Essentials Threat API credentials:** an Integration Key/Secret pair, separate from both TAP
   and Essentials Admin (see [Essentials Threat API docs](https://help.proofpoint.com/Essentials/Additional_Resources/API_Documentation/Essentials_Threat_API)).
+- **PPS credentials (optional, only for the quarantine tools):** an administrator with a role
+  that includes REST API access on your Proofpoint Protection Server. Cloud tenants: request
+  this through a Proofpoint support ticket. On-prem: enable the API GUI in `filter.cfg` and
+  create an API-type admin role in the PPS management interface.
 
 How credentials are sent to Proofpoint: TAP calls go to the cluster URL
 (`https://tap-api-v2.proofpoint.com/v2/...`) with HTTP Basic authentication
@@ -131,15 +141,24 @@ secret), then call `https://threatprotection-api.proofpoint.com/api/v1/dash/repo
 token is used only within the one request. Essentials Admin calls send `X-User` / `X-Password`
 as literal headers (not HTTP Basic) to the Admin base URL. Essentials Threat calls use HTTP
 Basic with the Integration Key/Secret against the Threat base URL, the same way TAP does.
-A base-url header that is not https on its required host does not block the request (tools/list
-still works), but every tool call then returns an `invalid_argument` error before any outbound
-request, so credentials can never be sent elsewhere.
-Values that look like unresolved templates (`${...}`) are treated as missing.
+Quarantine calls go to the PPS base URL (`<pps-base-url>/rest/v1/quarantine`) with HTTP Basic
+authentication (`pps_username:pps_password`).
 
-A request to `/mcp` with none of the three credential sets fully present gets HTTP 401 naming
-all three options. Sending only TAP headers (today's behavior) is unaffected; calling an
-Essentials tool without its credentials returns a `not_configured` error naming the missing
-headers instead of a 401, since the gateway already let the request through on another set.
+A base-url header that fails its structural check does not block the request (tools/list still
+works): a malformed TAP cluster URL, Essentials Admin URL or Essentials Threat URL makes every
+tool call return an `invalid_argument` error before any outbound request, while a malformed PPS
+base URL does the same only for the 4 quarantine tools, leaving every other tool unaffected --
+so credentials can never be sent elsewhere either way. The PPS base URL has no domain-suffix
+allowlist (unlike the other three): PPS cloud tenants are on `*.pphosted.com` and on-prem
+tenants are on an arbitrary customer host. Values that look like unresolved templates
+(`${...}`) are treated as missing.
+
+A request to `/mcp` with none of TAP / Essentials Admin / Essentials Threat fully present gets
+HTTP 401 naming all three options. Sending only TAP headers (today's behavior) is unaffected;
+calling an Essentials tool without its credentials returns a `not_configured` error naming the
+missing headers instead of a 401, since the gateway already let the request through on another
+set. PPS is not part of this gate -- its 3 headers are purely optional: without them, the 4
+quarantine tools return `not_configured`; every other tool is unaffected.
 
 ## Tools
 
@@ -154,7 +173,7 @@ hour) or `interval` (ISO8601, 30 seconds to 1 hour, e.g.
 | Tool | Purpose | Parameters (required in **bold**) |
 |---|---|---|
 | `proofpoint_navigate` | Describe the tools of one area (changes nothing) | **domain** |
-| `proofpoint_status` | Check that TAP accepts the credentials; whether Reports keys were sent | - |
+| `proofpoint_status` | Check that TAP accepts the credentials; which of Reports/Essentials Admin/Essentials Threat/PPS were sent; with org_domain, also probes Essentials Admin | org_domain |
 | `proofpoint_tap_get_all_threats` | All threat messages and clicks in a window | sinceSeconds, sinceTime, interval, threatStatus, threatType, format, max_events |
 | `proofpoint_tap_get_messages_delivered` | Threat messages that reached users | same as above |
 | `proofpoint_tap_get_messages_blocked` | Threat messages blocked or quarantined | same as above |
@@ -182,7 +201,10 @@ hour) or `interval` (ISO8601, 30 seconds to 1 hour, e.g.
 | `proofpoint_reports_threat_summary` | Threat volume by category | window, threatType |
 | `proofpoint_reports_mail_flow` | Trend of protected messages | window, granularity |
 | `proofpoint_reports_executive_summary` | Threat categories, VAPs and top clickers | window (7, 14, 30, 90) |
-| `proofpoint_quarantine_list` / `_search` / `_release` / `_delete` | Unavailable (see below) | as before |
+| `proofpoint_quarantine_list` | Quarantined messages in Proofpoint Protection Server (PPS), optionally filtered | sender, recipient, subject, startDate, endDate, folder, page, per_page |
+| `proofpoint_quarantine_search` | Find a quarantined message by sender, recipient or subject (one query, matched as OR) | **query**, startDate, endDate, page, per_page |
+| `proofpoint_quarantine_release` | Release a quarantined message | **message_id** |
+| `proofpoint_quarantine_delete` | Permanently delete a quarantined message | **message_id** |
 | `proofpoint_policy_list` / `_get` / `_list_routes` | Unavailable (see below) | as before |
 | `proofpoint_dlp_list_incidents` / `_get_incident` / `_list_encrypted` | Unavailable (see below) | as before |
 | `proofpoint_forensics_pull_messages` | Unavailable (see below) | **message_ids**, reason |
@@ -290,12 +312,26 @@ uv run pytest
   - `people_get_user_risk` looks the user up in the VAP and top-clicker lists.
   - `url_analyze` decodes the link with `/v2/url/decode` and parses it; TAP has no URL scoring.
   - `reports_*` use the Dashboard Reports API, which needs its own key (optional headers).
-- **Unavailable tools.** Quarantine, policy, DLP / encryption and message pull belong to other
-  Proofpoint products (Protection Server, Essentials, Threat Response) and are not reachable
-  with TAP credentials. These 11 tools stay listed for compatibility, change nothing, and return
-  `invalid_argument` naming the TAP tool that covers the nearest need.
-- **Cluster URL check.** `X-Proofpoint-Cluster-Url` is accepted only as an https URL on a
-  `proofpoint.com` host, so a caller cannot redirect the Basic credentials to another server.
+- **Unavailable tools.** Policy, DLP / encryption and message pull belong to other Proofpoint
+  products (Protection Server, Essentials, Threat Response), or -- for policy -- are not exposed
+  by any Proofpoint API found during research (TAP, Essentials Interface/Threat APIs, PPS REST
+  API; confirmed 2026-10-30). These 7 tools stay listed for compatibility, change nothing, and
+  return `invalid_argument` naming the TAP tool that covers the nearest need.
+- **Quarantine, via Proofpoint Protection Server (PRD-21254).** The 4 `quarantine_*` tools keep
+  their names and parameters but now call the real PPS REST API (`<pps-base-url>/rest/v1/quarantine`,
+  documented via the Cortex XSOAR "Proofpoint Protection Server v2" integration -- Proofpoint has
+  no single official PPS REST reference) when PPS credentials are sent; otherwise they return
+  `not_configured`. `message_id` is an opaque `folder:localguid` pair minted by `_list`/`_search`
+  and consumed by `_release`/`_delete` -- callers must not construct one themselves.
+  `_search`'s single `query` parameter is matched as OR across sender/recipient/subject (three
+  PPS lookups, merged and de-duplicated) to keep the tool's existing single-field search promise.
+- **Cluster/base URL checks.** `X-Proofpoint-Cluster-Url` is accepted only as an https URL on a
+  `proofpoint.com` host, so a caller cannot redirect the TAP Basic credentials to another server.
+  `X-Proofpoint-Pps-Base-Url` has the same structural check (https, bare host) but no domain
+  allowlist, because PPS cloud tenants are on `*.pphosted.com` and on-prem tenants are on an
+  arbitrary customer host -- the PPS admin password is supplied by the same tenant that supplies
+  the base URL, so the trust boundary is unchanged, but this is a narrower check than the TAP one
+  and is called out here for that reason.
 - **Bounded output.** SIEM lists are capped per list (`max_events`, default 100) with the full
   counts reported; every result is capped at 20,000 characters.
 - **Paging by offset.** `smart_search_trace`, `people_get_vap` and `people_get_top_clickers` page

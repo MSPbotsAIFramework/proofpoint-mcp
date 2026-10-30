@@ -81,7 +81,7 @@ DOMAINS: dict[str, tuple[str, list[str]]] = {
         ],
     ),
     "quarantine": (
-        "Unavailable: quarantine is not exposed by the TAP API.",
+        "Needs separate Proofpoint Protection Server (PPS) credentials; TAP alone cannot reach it.",
         [
             "proofpoint_quarantine_list",
             "proofpoint_quarantine_search",
@@ -131,6 +131,7 @@ def register(mcp: FastMCP, client_factory: ClientFactory) -> None:
             return {
                 "tap": tap,
                 "reports_credentials_sent": client.has_reports_credentials,
+                "pps_credentials_sent": client.has_pps_credentials,
                 "domains": {name: summary for name, (summary, _tools) in DOMAINS.items()},
             }
 
